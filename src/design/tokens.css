@@ -1,0 +1,140 @@
+/*
+ * Hisaab design tokens — "calm & minimal".
+ * Layout: one quiet column of content; numbers are the heroes; colour is used for meaning only.
+ *   green  (--accent) = calendar month / your money
+ *   indigo (--cycle)  = credit-card statement period
+ *   red / amber       = needs attention (overdue, over budget)
+ * Spending amounts stay neutral (--fg) so the screen never feels alarming.
+ */
+:root {
+  /* Surfaces & text */
+  --bg: #f6f8f7;
+  --surface: #ffffff;
+  --surface-2: #eef2f0;
+  --fg: #14211c;
+  --fg-2: #4e5d57;
+  --fg-3: #7b8883;
+  --line: #e1e7e4;
+
+  /* Meaning */
+  --accent: #1d6b55;
+  --accent-strong: #155240;
+  --accent-soft: #e2f0ea;
+  --on-accent: #ffffff;
+  --cycle: #5b4fa6;
+  --cycle-soft: #eceaf7;
+  --pos: #1f7a4d;
+  --neg: #b3432e;
+  --neg-soft: #f8e5e0;
+  --warn: #9a6410;
+  --warn-soft: #f6eddc;
+
+  /* Categories (10, tuned for both themes) */
+  --cat-1: #d4733a;
+  --cat-2: #4c9a4a;
+  --cat-3: #3d79b8;
+  --cat-4: #b0548a;
+  --cat-5: #c49a1d;
+  --cat-6: #6f7d77;
+  --cat-7: #8458c2;
+  --cat-8: #cc4f5c;
+  --cat-9: #2b98a3;
+  --cat-10: #6a62d1;
+
+  /* Type */
+  --font-display: 'Sora', 'Figtree', system-ui, sans-serif;
+  --font-body: 'Figtree', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-md: 0.9375rem;
+  --fs-lg: 1.125rem;
+  --fs-xl: 1.5rem;
+  --fs-2xl: 2.25rem;
+  --fs-3xl: 3rem;
+
+  /* Space, radius, elevation */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --r-sm: 8px;
+  --r-md: 14px;
+  --r-lg: 22px;
+  --r-pill: 999px;
+  --shadow-sheet: 0 -8px 40px rgb(10 30 22 / 0.16);
+  --shadow-fab: 0 6px 20px rgb(29 107 85 / 0.32);
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0e1412;
+    --surface: #151c19;
+    --surface-2: #1c2521;
+    --fg: #e5ece9;
+    --fg-2: #a9b7b1;
+    --fg-3: #7a8882;
+    --line: #26302c;
+    --accent: #52bf9c;
+    --accent-strong: #7ad3b5;
+    --accent-soft: #17332a;
+    --on-accent: #06201a;
+    --cycle: #a79bf0;
+    --cycle-soft: #26223f;
+    --pos: #62c58e;
+    --neg: #ef7f69;
+    --neg-soft: #3a1f1a;
+    --warn: #e2aa4f;
+    --warn-soft: #362a14;
+    --cat-1: #e88a52;
+    --cat-2: #6cb86a;
+    --cat-3: #5d98d6;
+    --cat-4: #d173ab;
+    --cat-5: #dbb43c;
+    --cat-6: #919e98;
+    --cat-7: #a47ee0;
+    --cat-8: #e8707b;
+    --cat-9: #48b6c1;
+    --cat-10: #8c85ea;
+    --shadow-sheet: 0 -8px 40px rgb(0 0 0 / 0.5);
+    --shadow-fab: 0 6px 20px rgb(0 0 0 / 0.45);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0e1412;
+  --surface: #151c19;
+  --surface-2: #1c2521;
+  --fg: #e5ece9;
+  --fg-2: #a9b7b1;
+  --fg-3: #7a8882;
+  --line: #26302c;
+  --accent: #52bf9c;
+  --accent-strong: #7ad3b5;
+  --accent-soft: #17332a;
+  --on-accent: #06201a;
+  --cycle: #a79bf0;
+  --cycle-soft: #26223f;
+  --pos: #62c58e;
+  --neg: #ef7f69;
+  --neg-soft: #3a1f1a;
+  --warn: #e2aa4f;
+  --warn-soft: #362a14;
+  --cat-1: #e88a52;
+  --cat-2: #6cb86a;
+  --cat-3: #5d98d6;
+  --cat-4: #d173ab;
+  --cat-5: #dbb43c;
+  --cat-6: #919e98;
+  --cat-7: #a47ee0;
+  --cat-8: #e8707b;
+  --cat-9: #48b6c1;
+  --cat-10: #8c85ea;
+  --shadow-sheet: 0 -8px 40px rgb(0 0 0 / 0.5);
+  --shadow-fab: 0 6px 20px rgb(0 0 0 / 0.45);
+  color-scheme: dark;
+}
