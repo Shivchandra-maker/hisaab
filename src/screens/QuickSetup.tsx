@@ -216,17 +216,17 @@ export function QuickSetup({ onClose }: { onClose: () => void }) {
           )}
         </Step>
 
-        <Step n={4} done={meta.autoAdd === true} title="Add ready messages automatically">
+        <Step n={4} done={meta.autoAdd !== false} title="Add ready messages automatically">
           <div className="item-sub">
             Skips review when the account is known and it isn’t a duplicate.
           </div>
           <button
             className="chip"
-            aria-pressed={meta.autoAdd === true}
+            aria-pressed={meta.autoAdd !== false}
             disabled={reading}
-            onClick={() => setMeta('autoAdd', meta.autoAdd !== true)}
+            onClick={() => setMeta('autoAdd', meta.autoAdd === false)}
           >
-            {meta.autoAdd === true ? 'On' : 'Off'}
+            {meta.autoAdd !== false ? 'On' : 'Off'}
           </button>
         </Step>
       </div>

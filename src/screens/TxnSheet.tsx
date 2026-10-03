@@ -11,7 +11,7 @@ import {
 } from '../design/components';
 import { periodContaining } from '../domain/cycle';
 import { addDays, formatDate } from '../domain/dates';
-import { formatINR, toPaise, toRupees } from '../domain/money';
+import { cleanAmountInput, formatINR, toPaise, toRupees } from '../domain/money';
 import type { Account, PaymentMode, Split, Transaction } from '../domain/types';
 import { deleteTransaction, restoreTransaction, saveTransaction } from '../db/repo';
 import { guessCategory } from '../domain/sms/categorize';
@@ -210,6 +210,8 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
   const save = async () => {
     try {
       setError('');
+      if (date > today)
+        throw new Error('That date is in the future. Add it on the day the money actually moves.');
       await saveTransaction(build() as Transaction);
       toast(
         editing
@@ -273,8 +275,9 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
           placeholder="0"
           autoFocus={!editing}
           value={amount}
+          style={{ width: `${Math.max(1, amount.length) + 0.6}ch` }}
           onChange={(e) => {
-            setAmount(e.target.value.replace(/[^\d.,]/g, ''));
+            setAmount(cleanAmountInput(e.target.value, amount));
             setError('');
           }}
         />
@@ -557,6 +560,7 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
             type="date"
             className="input"
             style={{ width: 'auto', padding: '5px 10px' }}
+            max={today}
             value={date}
             onChange={(e) => e.target.value && setDate(e.target.value)}
           />

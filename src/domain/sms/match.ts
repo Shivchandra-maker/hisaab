@@ -38,6 +38,8 @@ export interface Suggestion {
   unknownLast4?: string;
   /** Ready to add without edits: account known, not a duplicate. */
   ready: boolean;
+  /** Paid to / received from a person (not a shop): may be a loan, so we ask once. */
+  person?: string;
 }
 
 interface Ctx {
@@ -118,6 +120,32 @@ function findAccount(
   return { how: 'none' };
 }
 
+const BUSINESS =
+  /\b(store|stores|mart|traders?|enterprises?|services?|pvt|ltd|limited|llp|hotel|restaurant|cafe|caf[eé]|medical|medicals|pharma|pharmacy|chemist|kirana|general|bakery|bakers|foods?|sweets|petrol|fuel|filling|station|motors|garage|hospital|clinic|labs?|diagnostics|school|college|academy|salon|parlour|parlor|studio|fitness|gym|centre|center|shop|bazaar|bazar|super|market|agency|agencies|travels?|tours|electricals?|electronics|mobiles?|hardware|textiles?|fashions?|jewell?ers?|dhaba|bhavan|bhawan|corner|point|house|co\.?|company|india|tech|technologies|solutions|retail|wines|liquor|tea|chai|juice|canteen|mess)\b/i;
+
+/**
+ * Looks like a payment to or from a person rather than a shop: a phone-number UPI ID, or a plain
+ * two- or three-word name we know nothing about.
+ */
+export function personName(p: ParsedSms, known: boolean): string | undefined {
+  if (known || p.isWalletTopUp || p.isCardBillPayment || p.isAtm || p.kind === 'card_payment')
+    return undefined;
+  // Money in from people comes by UPI; salaries and refunds arrive by NEFT/IMPS from companies.
+  if (p.kind === 'credit' && (p.isRefund || p.isCashback || (p.mode !== 'upi' && !p.vpa)))
+    return undefined;
+  const local = p.vpa?.split('@')[0] ?? '';
+  const phoneVpa = /^(\+?91)?[6-9]\d{9}$/.test(local);
+  const name = p.merchant?.trim();
+  const nameLike =
+    !!name &&
+    /^[a-z][a-z.]+(?: [a-z][a-z.]*){1,3}$/i.test(name) &&
+    !BUSINESS.test(name) &&
+    !/\d/.test(name);
+  if (nameLike) return name;
+  if (phoneVpa) return name || local;
+  return undefined;
+}
+
 /** Same money already recorded? Matches on reference first, then amount + account + date window. */
 export function findDuplicate(
   s: Pick<Suggestion, 'amount' | 'date' | 'accountId' | 'toAccountId' | 'externalRef' | 'kind'>,
@@ -147,6 +175,17 @@ export function findDuplicate(
       t.source !== 'notification'
     )
       return { txn: t, reason: 'Same amount, account and date' };
+    // A loan you typed in, then its bank SMS: same money, already recorded as lent/borrowed.
+    if (
+      t.kind === 'debt' &&
+      s.accountId &&
+      t.accountId === s.accountId &&
+      t.source !== 'sms' &&
+      t.source !== 'notification' &&
+      ((s.kind === 'expense' && t.flow === 'out') ||
+        ((s.kind === 'income' || s.kind === 'refund') && t.flow === 'in'))
+    )
+      return { txn: t, reason: 'Already recorded in Lent & borrowed' };
   }
   return undefined;
 }
@@ -258,6 +297,13 @@ export function suggest(p: ParsedSms, ctx: Ctx): Suggestion {
     duplicateReason: dup?.reason,
     unknownLast4: !account && p.last4 ? p.last4 : undefined,
     ready: !!accountId && !needsTo && !dup && amount > 0 && p.confidence >= 0.6,
+    person:
+      kind === 'expense' || kind === 'income'
+        ? personName(
+            { ...p, merchant: merchant ?? p.merchant },
+            categorySource === 'rule' || categorySource === 'built-in',
+          )
+        : undefined,
   };
 }
 

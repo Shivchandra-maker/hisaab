@@ -65,7 +65,10 @@ export async function validateTransaction(t: New<Transaction>): Promise<void> {
 
 /* ───────────────────────── Transactions ───────────────────────── */
 
-export async function saveTransaction(t: New<Transaction> | Transaction): Promise<Transaction> {
+export async function saveTransaction(
+  t: New<Transaction> | Transaction,
+  opts: { learn?: boolean } = {},
+): Promise<Transaction> {
   await validateTransaction(t);
   const clean: New<Transaction> = { ...t };
   if (clean.kind !== 'transfer') delete clean.toAccountId;
@@ -76,9 +79,12 @@ export async function saveTransaction(t: New<Transaction> | Transaction): Promis
   if (clean.splits && clean.splits.length < 2) delete clean.splits;
 
   // Every categorised payee teaches the next guess ("Swiggy → Food & dining").
+  // Not for automatic adds (only your own choices teach) and not for Miscellaneous.
   if (
+    opts.learn !== false &&
     clean.merchant &&
     clean.categoryId &&
+    clean.categoryId !== 'other' &&
     !clean.splits &&
     ['expense', 'refund', 'income'].includes(clean.kind)
   )
@@ -320,7 +326,7 @@ export async function recordDebtMovement(input: {
   return t;
 }
 
-async function refreshDebtSettlement(debtId?: ID) {
+export async function refreshDebtSettlement(debtId?: ID) {
   if (!debtId) return;
   const debt = await db.debts.get(debtId);
   if (!debt) return;
@@ -335,7 +341,8 @@ async function refreshDebtSettlement(debtId?: ID) {
 /* ───────────────────────── Setup, sample, backup ───────────────────────── */
 
 export async function ensureDefaults() {
-  if ((await db.categories.count()) === 0) await db.categories.bulkAdd(defaultCategories);
+  // bulkPut, not bulkAdd: two first-run callers (a second tab, React StrictMode) can both see 0.
+  if ((await db.categories.count()) === 0) await db.categories.bulkPut(defaultCategories);
   // v1 named the catch-all category "Other"; it's "Miscellaneous" now.
   const other = await db.categories.get('other');
   if (other && other.name === 'Other')

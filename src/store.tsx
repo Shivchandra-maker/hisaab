@@ -33,7 +33,7 @@ interface Store {
   meta: Record<string, unknown>;
   /** Captured messages, newest first. */
   inbox: InboxItem[];
-  /** Messages waiting for a decision. */
+  /** Things in the Inbox that need you: unreadable/unknown-account messages, unsure duplicates, "Spent or lent?". */
   inboxNew: number;
   rules: MerchantRule[];
   isSample: boolean;
@@ -41,6 +41,14 @@ interface Store {
 }
 
 const Ctx = createContext<Store | null>(null);
+
+/** Duplicates we're not sure about; certain ones (same bank reference…) are handled silently. */
+export const UNSURE_DUPLICATES = [
+  'Same payment from a bank SMS and an app notification',
+  'Same amount, account and date',
+];
+export const needsDupCheck = (i: InboxItem) =>
+  i.status === 'duplicate' && UNSURE_DUPLICATES.includes(i.note ?? '');
 
 const byOrder = <T extends { sortOrder: number; name: string }>(a: T, b: T) =>
   a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
@@ -96,7 +104,9 @@ export function StoreProvider({ children, loading }: { children: ReactNode; load
       categoryById: new Map(cats.map((c) => [c.id, c])),
       meta,
       inbox,
-      inboxNew: inbox.filter((i) => i.status === 'new').length,
+      inboxNew:
+        inbox.filter((i) => i.status === 'new' || needsDupCheck(i)).length +
+        transactions.filter((t) => t.askLoan && !t.deletedAt).length,
       rules: rules.filter((r) => !r.deletedAt).sort((a, b) => a.name.localeCompare(b.name)),
       isSample: meta.sample === true,
       onboarded: meta.onboarded === true,

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import { MonthSwitcher, Segmented } from '../design/components';
+import { EmptyState, MonthSwitcher, Segmented } from '../design/components';
 import { Icon } from '../design/Icon';
-import { formatDate, monthOf } from '../domain/dates';
+import { formatDate, formatMonth, monthOf } from '../domain/dates';
 import { counted, spendEffect } from '../domain/ledger';
 import { formatINR } from '../domain/money';
 import type { TxnKind } from '../domain/types';
@@ -42,15 +42,18 @@ export function Transactions({
     for (const t of list) groups.set(t.date, [...(groups.get(t.date) ?? []), t]);
     return [...groups.entries()];
   }, [transactions, month, filter, accountId, q, categoryById]);
+  const count = days.reduce((n, [, l]) => n + l.length, 0);
+  const net = days.reduce((n, [, l]) => n + l.reduce((m, t) => m + spendEffect(t), 0), 0);
+  const filtered = filter !== 'all' || !!accountId || !!q.trim();
 
   return (
     <div className="page">
       <div className="page-head">
-        <h1>Transactions</h1>
+        <h1>Activity</h1>
         <MonthSwitcher month={month} onChange={setMonth} max={monthOf(today)} />
       </div>
       <div className="stack">
-        <div className="row" style={{ flexWrap: 'wrap' }}>
+        <div className="filter-row">
           <Segmented
             label="Type"
             value={filter}
@@ -62,13 +65,28 @@ export function Transactions({
               { value: 'transfer', label: 'Transfers' },
             ]}
           />
+        </div>
+        <div className="row filter-row">
+          <div className="row input search-box">
+            <Icon name="search" size={18} className="faint" />
+            <label className="sr-only" htmlFor="tx-search">
+              Search
+            </label>
+            <input
+              id="tx-search"
+              aria-label="Search merchant, note or category"
+              type="search"
+              placeholder="Search"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </div>
           <label className="sr-only" htmlFor="tx-account">
             Account
           </label>
           <select
             id="tx-account"
-            className="input"
-            style={{ width: 'auto' }}
+            className="input account-select"
             value={accountId}
             onChange={(e) => setAccountId(e.target.value)}
           >
@@ -80,30 +98,48 @@ export function Transactions({
             ))}
           </select>
         </div>
-        <div className="row input" style={{ padding: '0 12px' }}>
-          <Icon name="search" size={18} className="faint" />
-          <label className="sr-only" htmlFor="tx-search">
-            Search
-          </label>
-          <input
-            id="tx-search"
-            placeholder="Search merchant, note or category"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            style={{
-              border: 0,
-              outline: 0,
-              background: 'none',
-              padding: '10px 0',
-              flex: 1,
-              minWidth: 0,
-            }}
-          />
-        </div>
       </div>
 
+      {count > 0 && (
+        <div className="list-summary">
+          <span>
+            {count} transaction{count === 1 ? '' : 's'}
+            {filtered ? (count === 1 ? ' matches' : ' match') : ''}
+          </span>
+          {net !== 0 && (
+            <span>
+              {net > 0 ? 'Spent ' : 'Refunded '}
+              <b className="num">{formatINR(Math.abs(net))}</b>
+            </span>
+          )}
+        </div>
+      )}
+
       <section className="panel" aria-label="Transactions">
-        {days.length === 0 && <p className="muted">No transactions match these filters.</p>}
+        {days.length === 0 && (
+          <EmptyState
+            title={filtered ? 'No matches' : `Nothing in ${formatMonth(month)}`}
+            body={
+              filtered
+                ? 'Try another word, or clear the filters.'
+                : 'Transactions you add or accept from the Inbox show up here, grouped by day.'
+            }
+            action={
+              filtered && (
+                <button
+                  className="btn"
+                  onClick={() => {
+                    setFilter('all');
+                    setAccountId('');
+                    setQ('');
+                  }}
+                >
+                  Clear filters
+                </button>
+              )
+            }
+          />
+        )}
         {days.map(([date, list]) => {
           const spent = list.reduce((n, t) => n + spendEffect(t), 0);
           return (

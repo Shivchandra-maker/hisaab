@@ -1,5 +1,6 @@
 import { AccountAvatar, Amount, CategoryAvatar } from '../design/components';
 import { Icon } from '../design/Icon';
+import { formatDate } from '../domain/dates';
 import { formatINR } from '../domain/money';
 import type { ID, Transaction } from '../domain/types';
 import { useStore } from '../store';
@@ -26,8 +27,23 @@ const neutralAvatar = (icon: string) => (
  * One transaction line. Tapping opens the editor.
  * `perspective` = the account whose register this row is shown in (signs transfers for it).
  */
-export function TxnRow({ t, perspective }: { t: Transaction; perspective?: ID }) {
-  const { accountById, categoryById, debts } = useStore();
+/** Payment modes that only repeat what the account already says ("Cash · Cash", "HDFC Regalia · Card"). */
+const redundantMode = (kind: string | undefined, mode: string | undefined) =>
+  (kind === 'cash' && mode === 'cash') ||
+  (kind === 'credit_card' && mode === 'card') ||
+  (kind === 'wallet' && (mode === 'wallet' || mode === 'upi'));
+
+export function TxnRow({
+  t,
+  perspective,
+  showDate,
+}: {
+  t: Transaction;
+  perspective?: ID;
+  /** Lead the second line with the date (lists not grouped by day). */
+  showDate?: boolean;
+}) {
+  const { accountById, categoryById, debts, today } = useStore();
   const { openTxn } = useUI();
   const acc = accountById.get(t.accountId);
   const to = t.toAccountId ? accountById.get(t.toAccountId) : undefined;
@@ -43,7 +59,7 @@ export function TxnRow({ t, perspective }: { t: Transaction; perspective?: ID })
   let sub = [
     split ? `Split · ${t.splits!.length} categories` : cat?.name !== title ? cat?.name : null,
     acc?.name,
-    t.paymentMode ? modeLabel[t.paymentMode] : null,
+    t.paymentMode && !redundantMode(acc?.kind, t.paymentMode) ? modeLabel[t.paymentMode] : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -90,6 +106,7 @@ export function TxnRow({ t, perspective }: { t: Transaction; perspective?: ID })
         <div className="item-title">{title}</div>
         <div className="item-sub">
           {t.status === 'pending' ? 'Needs review · ' : ''}
+          {showDate ? `${t.date === today ? 'Today' : formatDate(t.date)} · ` : ''}
           {sub}
         </div>
       </div>

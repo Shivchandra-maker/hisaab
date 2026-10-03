@@ -49,3 +49,22 @@ export const sumPaise = (xs: Iterable<Paise>): Paise => {
   for (const x of xs) s += x;
   return s;
 };
+
+/**
+ * Clean what the user types into an amount box: digits, commas and one decimal point,
+ * at most two decimals. A keystroke that isn't part of an amount ("-", "e") is refused,
+ * keeping `prev`, so "1e5" can't silently become 15. Pasted "₹1,250" is fine.
+ */
+export function cleanAmountInput(raw: string, prev = ''): string {
+  if (/[^\d.,\s₹]/.test(raw)) return prev;
+  const s = raw.replace(/[^\d.,]/g, '');
+  const dot = s.indexOf('.');
+  if (dot === -1) return s;
+  return (
+    s.slice(0, dot + 1) +
+    s
+      .slice(dot + 1)
+      .replace(/[.,]/g, '')
+      .slice(0, 2)
+  );
+}
