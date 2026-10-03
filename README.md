@@ -7,21 +7,6 @@ A personal expense tracker that answers two questions separately:
 
 Card bill payments are transfers, so they are never counted as spending twice.
 
-## Status
-
-**Phase 3 — Android app** built: the Hisaab Android app reads new bank SMS and payment-app notifications (PhonePe, GPay, Paytm…) on your phone and files them in the Inbox. It can import the last 30/90 days of messages and optionally add ready ones automatically. Nothing leaves the phone. GitHub Actions builds the signed APK on every push — see [docs/android-setup.md](docs/android-setup.md).
-
-**Phase 2 — Paste bank SMS** done: paste messages into the **Inbox**, review the suggested transactions (account matched by last 4 digits, merchant, category, date) and add them in one tap. OTPs, offers and declined payments are skipped; duplicates are flagged; autopay and EMI messages are kept as notices. Categories you choose become **merchant rules** used next time.
-
-**Phase 1 — Core ledger** done. Data is saved on your device (IndexedDB). You can:
-
-- set up bank, cash, wallet/UPI Lite and credit-card accounts (or explore with sample data);
-- add, edit, split, duplicate and delete (with undo) expenses, income, refunds and transfers;
-- correct a balance with _Update balance_ (an adjustment that never counts as spending);
-- track money lent and borrowed, with repayments;
-- manage categories and sub-categories;
-- download / restore a backup, switch light/dark theme.
-
 Shortcut on desktop: press **N** to add a transaction.
 
 ## Run it
