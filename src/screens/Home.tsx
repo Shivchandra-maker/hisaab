@@ -2,8 +2,10 @@ import { useMemo } from 'react';
 import {
   Amount,
   CategoryAvatar,
+  Delta,
   EmptyState,
   MonthSwitcher,
+  PaceChart,
   Panel,
   Progress,
   StatusPill,
@@ -15,12 +17,14 @@ import {
   monthOf,
   monthRange,
   parseDate,
+  relativeDay,
   ymd,
 } from '../domain/dates';
 import {
   billReserve,
   calendarVsStatement,
   cardSnapshot,
+  dailySpend,
   summarise,
   summariseMonth,
 } from '../domain/ledger';
@@ -29,9 +33,19 @@ import { Icon } from '../design/Icon';
 import { useStore } from '../store';
 import { useUI } from '../ui';
 import { TxnRow } from './TxnRow';
+import { shopsToSort } from '../domain/sms/shops';
 
 export function Home({ month, setMonth }: { month: string; setMonth: (m: string) => void }) {
-  const { transactions: txns, accounts, categoryById, today, subscriptions, inboxNew } = useStore();
+  const {
+    transactions: txns,
+    accounts,
+    categoryById,
+    today,
+    subscriptions,
+    inboxNew,
+    rules,
+  } = useStore();
+  const toSort = useMemo(() => shopsToSort(txns, rules).shops.length, [txns, rules]);
   const { go, openTxn } = useUI();
   const cards = accounts.filter((a) => a.card && !a.archived);
   const isCurrent = month === monthOf(today);
@@ -46,6 +60,12 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
     return summarise(txns, `${pm}-01`, ymd(py, pmm, day));
   }, [txns, month, isCurrent, today]);
   const delta = s.spent - prev.spent;
+  const prevName = formatMonth(addMonths(month, -1), 'short');
+  const daily = useMemo(() => dailySpend(txns, month), [txns, month]);
+  const prevDaily = useMemo(() => dailySpend(txns, addMonths(month, -1)), [txns, month]);
+  const upTo = isCurrent ? Number(today.slice(8)) : daily.length;
+  const hasPace = daily.some((v) => v > 0) || prevDaily.some((v) => v > 0);
+  const [rupee, ...digits] = formatINR(s.spent);
 
   const topCats = [...s.byCategory.entries()]
     .filter(([, v]) => v > 0)
@@ -62,11 +82,14 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
     .filter((t) => monthOf(t.date) === month)
     .slice(-6)
     .reverse();
+  // "Coming up" is about the real future, so it only shows on the current month.
   const upcoming = subscriptions
-    .filter((x) => x.active && x.nextDate >= today)
+    .filter((x) => isCurrent && x.active && x.nextDate >= today)
     .sort((a, b) => (a.nextDate < b.nextDate ? -1 : 1))
     .slice(0, 3);
   const cardSpend = cvs.reduce((n, x) => n + x.v.spentThisMonth, 0);
+  const dueCards = isCurrent ? cvs.filter((x) => x.snap.dueNow > 0) : [];
+  const anyRollover = cvs.some((x) => x.v.onNextStatement > 0);
 
   return (
     <div className="page">
@@ -79,9 +102,19 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
           <Icon name="inbox" size={18} />
           <span>
             <b>
-              {inboxNew} bank message{inboxNew === 1 ? '' : 's'}
+              {inboxNew} thing{inboxNew === 1 ? '' : 's'}
             </b>{' '}
-            waiting for review
+            need{inboxNew === 1 ? 's' : ''} you in the Inbox
+          </span>
+          <span className="spacer" />
+          <Icon name="right" size={16} />
+        </button>
+      )}
+      {inboxNew === 0 && toSort >= 3 && (
+        <button className="inbox-banner" onClick={() => go('sort')}>
+          <Icon name="sparkle" size={18} />
+          <span>
+            <b>Where does your money go?</b> {toSort} shops to sort
           </span>
           <span className="spacer" />
           <Icon name="right" size={16} />
@@ -93,33 +126,56 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
           {isCurrent ? 'Spent so far in ' : 'Spent in '}
           {formatMonth(month, 'short')}
         </span>
-        <span className="hero-amount num">{formatINR(s.spent)}</span>
-        <span className="muted">
-          {delta <= 0 ? `${formatINR(-delta)} less` : `${formatINR(delta)} more`} than{' '}
-          {formatMonth(addMonths(month, -1), 'short')}
-          {isCurrent ? ' by this date' : ''}
+        <span className="hero-amount num" aria-label={formatINR(s.spent)}>
+          <span className="cur">{rupee}</span>
+          {digits.join('')}
         </span>
+        {(s.spent > 0 || prev.spent > 0) && (
+          <Delta value={delta} suffix={`${prevName}${isCurrent ? ' by this date' : ''}`} />
+        )}
+        {hasPace && (
+          <div className="pace-box">
+            <PaceChart
+              current={daily}
+              previous={prevDaily}
+              upTo={upTo}
+              label={`Running total of spending in ${formatMonth(month)} compared with ${prevName}`}
+            />
+            <div className="legend">
+              <span>
+                <i className="lg-line" />
+                {formatMonth(month, 'short')}
+              </span>
+              <span>
+                <i className="lg-dash" />
+                {prevName}
+              </span>
+            </div>
+          </div>
+        )}
         <div className="hero-stats">
           <div className="stat">
             <div className="label">Income</div>
             <div className="v">
-              <Amount value={s.income} kind="income" />
+              <Amount value={s.income} kind={s.income > 0 ? 'income' : undefined} />
             </div>
           </div>
           <div className="stat">
-            <div className="label">Saved</div>
-            <div className="v num">{formatINR(s.net)}</div>
+            <div className="label">{s.net < 0 ? 'Over income' : 'Saved'}</div>
+            <div className="v num">{formatINR(Math.abs(s.net))}</div>
           </div>
-          <div className="stat">
-            <div className="label">On credit cards</div>
-            <div className="v num">{formatINR(cardSpend)}</div>
-          </div>
+          {cards.length > 0 && (
+            <div className="stat">
+              <div className="label">On cards</div>
+              <div className="v num">{formatINR(cardSpend)}</div>
+            </div>
+          )}
         </div>
       </section>
 
       {cards.length > 0 && (
         <Panel
-          title="This month vs your card statements"
+          title="Card spending by statement"
           action={
             <button className="btn btn-ghost" onClick={() => go('accounts')}>
               Cards
@@ -127,25 +183,23 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
           }
         >
           <div className="stack">
-            <p className="muted" style={{ margin: 0, fontSize: 'var(--fs-sm)' }}>
-              Card spending is counted on the day you spent it. Here is where{' '}
-              {formatMonth(month, 'short')}'s card spending will be billed.
-            </p>
-            <div className="legend">
-              <span>
-                <i style={{ background: 'var(--cycle)' }} />
-                On the statement closing this month
-              </span>
-              <span>
-                <i
-                  style={{
-                    background:
-                      'repeating-linear-gradient(135deg, var(--cycle) 0 2px, var(--cycle-soft) 2px 5px)',
-                  }}
-                />
-                Rolls to next month's statement
-              </span>
-            </div>
+            {anyRollover && (
+              <div className="legend">
+                <span>
+                  <i style={{ background: 'var(--cycle)' }} />
+                  On the statement closing this month
+                </span>
+                <span>
+                  <i
+                    style={{
+                      background:
+                        'repeating-linear-gradient(135deg, var(--cycle) 0 2px, var(--cycle-soft) 2px 5px)',
+                    }}
+                  />
+                  Next month’s statement
+                </span>
+              </div>
+            )}
             {cvs.map(({ card, v }) => {
               const total = Math.max(v.spentThisMonth, 1);
               return (
@@ -167,17 +221,30 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
                       />
                     </div>
                     <div className="item-sub">
-                      {formatINR(v.onThisMonthsStatement)} on {formatDate(v.closingPeriod.end)}{' '}
-                      statement · {formatINR(v.onNextStatement)} rolls over
+                      {v.spentThisMonth === 0
+                        ? `No spending yet · statement on ${formatDate(v.closingPeriod.end)}`
+                        : v.onNextStatement === 0
+                          ? `All on the ${formatDate(v.closingPeriod.end)} statement`
+                          : v.onThisMonthsStatement === 0
+                            ? 'All on next month’s statement'
+                            : `${formatINR(v.onThisMonthsStatement)} on ${formatDate(v.closingPeriod.end)} statement · ${formatINR(v.onNextStatement)} on the next`}
                     </div>
                   </div>
                 </button>
               );
             })}
-            <div className="note note-ok">
-              {formatINR(reserve.owedToCards)} of the {formatINR(reserve.cash)} in your accounts is
-              already owed to cards. Free to spend: <b>{formatINR(reserve.freeToSpend)}</b>.
-            </div>
+            {isCurrent && (
+              <div className="note note-ok free-note">
+                <span>
+                  <span className="label">Free to spend</span>
+                  <b className="num">{formatINR(reserve.freeToSpend)}</b>
+                </span>
+                <span>
+                  after keeping {formatINR(reserve.owedToCards)} aside for card bills, out of{' '}
+                  {formatINR(reserve.cash)} in your accounts.
+                </span>
+              </div>
+            )}
           </div>
         </Panel>
       )}
@@ -204,7 +271,10 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
                   <CategoryAvatar category={c} small />
                   <div className="item-main stack" style={{ gap: 4 }}>
                     <div className="row">
-                      <span style={{ fontWeight: 500 }}>{c?.name ?? 'Uncategorised'}</span>
+                      <span className="cat-name">{c?.name ?? 'Uncategorised'}</span>
+                      <span className="faint share">
+                        {Math.round((amt / Math.max(1, s.spent)) * 100)}%
+                      </span>
                       <span className="spacer" />
                       <span className="num">{formatINR(amt)}</span>
                     </div>
@@ -218,32 +288,36 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
 
         <Panel title="Coming up">
           <div className="list">
-            {upcoming.length === 0 && !cvs.some((x) => x.snap.dueNow > 0) && (
+            {!isCurrent && (
               <p className="muted" style={{ margin: 0 }}>
-                No bills or subscriptions due.
+                Upcoming bills show when you’re on {formatMonth(monthOf(today), 'short')}.
               </p>
             )}
-            {cvs
-              .filter((x) => x.snap.dueNow > 0)
-              .map(({ card, snap }) => (
-                <div key={card.id} className="item">
-                  <div className="item-main">
-                    <div className="item-title">{card.name} bill</div>
-                    <div className="item-sub">
-                      Due {formatDate(snap.dueDate!)} · in {snap.daysToDue} days
-                    </div>
+            {isCurrent && upcoming.length === 0 && dueCards.length === 0 && (
+              <p className="muted" style={{ margin: 0 }}>
+                Nothing due. Card bills and subscriptions will show here.
+              </p>
+            )}
+            {dueCards.map(({ card, snap }) => (
+              <div key={card.id} className="item">
+                <div className="item-main">
+                  <div className="item-title">{card.name} bill</div>
+                  <div className="item-sub">
+                    Due {formatDate(snap.dueDate!)} · {relativeDay(today, snap.dueDate!)}
                   </div>
-                  <StatusPill status={snap.dueStatus} />
-                  <span className="num">{formatINR(snap.dueNow)}</span>
                 </div>
-              ))}
+                <StatusPill status={snap.dueStatus} />
+                <span className="num">{formatINR(snap.dueNow)}</span>
+              </div>
+            ))}
             {upcoming.map((x) => (
               <div key={x.id} className="item">
                 <CategoryAvatar category={categoryById.get(x.categoryId)} small />
                 <div className="item-main">
                   <div className="item-title">{x.name}</div>
                   <div className="item-sub">
-                    {formatDate(x.nextDate)} · {x.autoPay ? 'Auto-pay' : 'Pay manually'}
+                    {formatDate(x.nextDate)} · {relativeDay(today, x.nextDate)} ·{' '}
+                    {x.autoPay ? 'Auto-pay' : 'Pay manually'}
                   </div>
                 </div>
                 <span className="num">{formatINR(x.amount)}</span>
@@ -264,7 +338,11 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
         {recent.length === 0 && (
           <EmptyState
             title="Nothing logged this month"
-            body="Add what you spend as you go — it takes three taps."
+            body={
+              isCurrent
+                ? 'Add what you spend as you go — amount, category, done.'
+                : `Nothing was recorded in ${formatMonth(month)}.`
+            }
             action={
               <button className="btn btn-primary" onClick={() => openTxn()}>
                 Add expense
@@ -274,7 +352,7 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
         )}
         <div className="list">
           {recent.map((t) => (
-            <TxnRow key={t.id} t={t} />
+            <TxnRow key={t.id} t={t} showDate />
           ))}
         </div>
       </Panel>

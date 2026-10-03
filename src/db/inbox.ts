@@ -208,19 +208,28 @@ export interface AddInput {
   paymentMode?: Transaction['paymentMode'];
   externalRef?: string;
   note?: string;
+  /** Payment to/from a person: ask "Spent, lent or paid back?" in the Inbox. */
+  askLoan?: boolean;
 }
 
 /** Turn an inbox item into a confirmed transaction (and teach the merchant rule). */
-export async function addFromInbox(itemId: ID, input: AddInput): Promise<Transaction> {
+export async function addFromInbox(
+  itemId: ID,
+  input: AddInput,
+  opts: { auto?: boolean } = {},
+): Promise<Transaction> {
   const item = await db.inbox.get(itemId);
   if (!item) throw new Error('Message not found.');
-  const t = await saveTransaction({
-    ...input,
-    tags: [],
-    source: item.source === 'paste' ? 'sms' : item.source,
-    status: 'confirmed',
-    rawText: item.rawText,
-  });
+  const t = await saveTransaction(
+    {
+      ...input,
+      tags: [],
+      source: item.source === 'paste' ? 'sms' : item.source,
+      status: 'confirmed',
+      rawText: item.rawText,
+    },
+    { learn: !opts.auto },
+  );
   await db.inbox.update(itemId, { status: 'added', txnId: t.id, updatedAt: stamp() });
   // Remember which account messages like this belong to, for ones that don't say.
   const hints = await getMeta<Record<string, string>>('accountHints', {});
@@ -230,31 +239,64 @@ export async function addFromInbox(itemId: ID, input: AddInput): Promise<Transac
   return t;
 }
 
-/** Add every item that needs no decision: account known, not a duplicate. */
-export async function addAllReady(): Promise<number> {
+/** People you told us about: "spent" = treat payments to them as spending without asking. */
+export type PersonAnswers = Record<string, 'spent' | 'lent' | 'borrowed'>;
+
+export const personKey = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
+
+/**
+ * Add every item that needs no decision: account known, not a duplicate. Payments to people
+ * are added too (they count until you say otherwise) and flagged for one question.
+ * Loads everything once, so a first import of hundreds of messages stays quick.
+ */
+export async function addAllReady(
+  onProgress?: (done: number, total: number) => void,
+): Promise<number> {
   const items = await db.inbox.where('status').equals('new').toArray();
+  if (!items.length) return 0;
+  const base = await context(todayIST());
+  const answers = await getMeta<PersonAnswers>('personAnswers', {});
   let n = 0;
+  let seen = 0;
   for (const item of items) {
-    const s = await suggestionFor(item);
-    if (!s.ready || !s.accountId) continue;
-    await addFromInbox(item.id, {
-      kind: s.kind,
-      amount: s.amount,
-      date: s.date,
-      accountId: s.accountId,
-      toAccountId: s.toAccountId,
-      categoryId: s.categoryId,
-      merchant: s.merchant,
-      paymentMode: s.paymentMode,
-      externalRef: s.externalRef,
-    });
-    n++;
+    seen++;
+    const s = suggest(item.parsed, { ...base, receivedAt: item.receivedAt });
+    if (s.ready && s.accountId) {
+      const t = await addFromInbox(
+        item.id,
+        {
+          kind: s.kind,
+          amount: s.amount,
+          date: s.date,
+          accountId: s.accountId,
+          toAccountId: s.toAccountId,
+          categoryId: s.categoryId,
+          merchant: s.merchant,
+          paymentMode: s.paymentMode,
+          externalRef: s.externalRef,
+          askLoan: !!s.person && answers[personKey(s.person)] !== 'spent',
+        },
+        { auto: true },
+      );
+      base.transactions.push(t);
+      base.accountHints = { ...base.accountHints, [accountHintKey(item.parsed)]: s.accountId };
+      n++;
+    } else if (s.duplicateOf) {
+      await db.inbox.update(item.id, {
+        status: 'duplicate',
+        duplicateOf: s.duplicateOf.id,
+        note: s.duplicateReason,
+        updatedAt: stamp(),
+      });
+    }
+    if (onProgress && seen % 25 === 0) onProgress(seen, items.length);
   }
+  onProgress?.(items.length, items.length);
   return n;
 }
 
-export const ignoreInboxItem = (id: ID) =>
-  db.inbox.update(id, { status: 'ignored', note: 'Ignored by you', updatedAt: stamp() });
+export const ignoreInboxItem = (id: ID, note = 'Ignored by you') =>
+  db.inbox.update(id, { status: 'ignored', note, updatedAt: stamp() });
 
 /** Bring an ignored or duplicate item back for review. */
 export const restoreInboxItem = (id: ID) =>

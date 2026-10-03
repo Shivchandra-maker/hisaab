@@ -155,6 +155,11 @@ export interface Transaction extends Syncable {
   externalRef?: string;
   /** Original SMS/email text for auto-captured transactions. */
   rawText?: string;
+  /**
+   * Captured payment to/from a person: still waiting for "Spent, lent or paid back?".
+   * Counted as spending/income until answered.
+   */
+  askLoan?: boolean;
 }
 
 /* ───────────────────────── Budgets ───────────────────────── */

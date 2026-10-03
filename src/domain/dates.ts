@@ -97,3 +97,12 @@ export function ordinal(n: number): string {
       : (({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[n % 10] ?? 'th');
   return `${n}${s}`;
 }
+
+/** "Today", "Tomorrow", "Yesterday", "in 5 days", "3 days ago" — for due dates and recent items. */
+export function relativeDay(today: ISODate, d: ISODate): string {
+  const n = daysBetween(today, d);
+  if (n === 0) return 'Today';
+  if (n === 1) return 'Tomorrow';
+  if (n === -1) return 'Yesterday';
+  return n > 0 ? `in ${n} days` : `${-n} days ago`;
+}

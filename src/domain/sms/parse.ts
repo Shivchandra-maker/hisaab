@@ -63,12 +63,14 @@ export interface ParsedSms {
   /** EMI notices. */
   emiMonths?: number;
   emiAmount?: Paise;
+  /** Credit-card statement alerts: read for card details, never added as a payment. */
+  statement?: { totalDue?: Paise; minDue?: Paise; dueDate?: ISODate };
   /** 0–1: how sure the parser is that this is a real, complete transaction. */
   confidence: number;
 }
 
 /** Bump when parsing changes, so messages already in the Inbox are read again with the new rules. */
-export const PARSER_VERSION = 2;
+export const PARSER_VERSION = 3;
 
 /* ───────────────────────── helpers ───────────────────────── */
 
@@ -336,6 +338,37 @@ export function parseSms(input: string): ParsedSms {
     !/\b(reversed|refund)\b/i.test(flat)
   )
     return { ...base(), reason: 'Declined or failed — no money moved', bank };
+
+  // 2a. Card statement generated: tells us the statement day, due date and amount due.
+  if (
+    /\bstatement\b/i.test(flat) &&
+    /\b(total\s*(?:amt\.?|amount)?\s*due|total\s*outstanding|amount\s*due|min(?:imum)?\.?\s*(?:amt\.?|amount)?\s*due)\b/i.test(
+      flat,
+    ) &&
+    !/\b(debited|credited|spent|received|thank you for (?:your )?payment)\b/i.test(flat)
+  ) {
+    const num = (re: RegExp) => {
+      const m = flat.match(re);
+      return m ? toPaise(m[1]!) : undefined;
+    };
+    const totalDue = num(
+      /(?:total\s*(?:amt\.?|amount)?\s*due|total\s*outstanding|(?<!min(?:imum)?\.?\s*(?:amt\.?|amount)?\s*)amount\s*due)\s*(?:is|of|:|-)?\s*(?:rs\.?|inr|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    );
+    const minDue = num(
+      /min(?:imum)?\.?\s*(?:amt\.?|amount)?\s*due\s*(?:is|of|:|-)?\s*(?:rs\.?|inr|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    );
+    const dueAt = flat.match(/(?:payment\s*)?due\s*(?:date|by|on)\b\s*(?:is|:|-)?\s*(.{0,24})/i);
+    const { last4 } = findLast4(flat);
+    return {
+      ...base(),
+      reason: 'Card statement',
+      instrument: 'credit_card',
+      last4,
+      bank,
+      date: findDate(flat.replace(dueAt?.[0] ?? '\u0000', ' ')),
+      statement: { totalDue, minDue, dueDate: dueAt ? findDate(dueAt[1]!) : undefined },
+    };
+  }
 
   // 2. EMI conversion notices.
   const emi =

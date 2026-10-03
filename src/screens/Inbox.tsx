@@ -1,10 +1,18 @@
-import { useMemo, useState } from 'react';
-import { ConfirmButton, EmptyState, ErrorNote, Field, Panel } from '../design/components';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { CategoryAvatar, ConfirmButton, EmptyState, ErrorNote, Field } from '../design/components';
 import { Icon } from '../design/Icon';
-import { formatDate } from '../domain/dates';
-import { formatINR, toPaise, toRupees } from '../domain/money';
-import { suggest, type Suggestion } from '../domain/sms/match';
-import type { InboxItem, TxnKind } from '../domain/types';
+import { addDays, formatDate } from '../domain/dates';
+import { cleanAmountInput, formatINR, toPaise, toRupees } from '../domain/money';
+import { accountHintKey, suggest, type Suggestion } from '../domain/sms/match';
+import type { InboxItem, Transaction, TxnKind } from '../domain/types';
+import {
+  openDebtsWith,
+  resolvePersonPayment,
+  splitWithFriends,
+  suggestedChoice,
+  type PersonChoice,
+} from '../db/loans';
+import { setMeta } from '../db/repo';
 import {
   addAllReady,
   addFromInbox,
@@ -15,7 +23,7 @@ import {
   restoreInboxItem,
   type IngestSummary,
 } from '../db/inbox';
-import { useStore } from '../store';
+import { needsDupCheck, useStore } from '../store';
 import { useUI } from '../ui';
 
 const kindLabel: Record<string, string> = {
@@ -25,9 +33,10 @@ const kindLabel: Record<string, string> = {
   transfer: 'Transfer',
 };
 
-function summaryText(s: IngestSummary): string {
+function summaryText(s: IngestSummary, added = 0): string {
   const parts = [
-    s.toReview && `${s.toReview} to review`,
+    added && `${added} added`,
+    s.toReview - added > 0 && `${s.toReview - added} need you`,
     s.duplicates && `${s.duplicates} already recorded`,
     s.notices && `${s.notices} autopay/EMI notice${s.notices > 1 ? 's' : ''}`,
     s.ignored && `${s.ignored} skipped (OTP, promotion or declined)`,
@@ -36,18 +45,25 @@ function summaryText(s: IngestSummary): string {
   return `Read ${s.read} message${s.read === 1 ? '' : 's'}: ${parts.join(' · ') || 'nothing new'}.`;
 }
 
-/** Paste bank SMS → review → one tap to add. */
+/** Inbox = only what needs you. Everything Hisaab understood is already added. */
 export function Inbox() {
   const { inbox, accounts, rules, transactions, today, meta } = useStore();
-  const { toast } = useUI();
+  const { toast, go } = useUI();
   const [text, setText] = useState('');
   const [result, setResult] = useState('');
   const [busy, setBusy] = useState(false);
+  const autoAdd = meta.autoAdd !== false;
 
   const fresh = inbox.filter((i) => i.status === 'new');
-  const dups = inbox.filter((i) => i.status === 'duplicate');
+  const dups = inbox.filter(needsDupCheck);
   const notices = inbox.filter((i) => i.status === 'notice');
-  const handled = inbox.filter((i) => i.status === 'added' || i.status === 'ignored');
+  const handled = inbox.filter(
+    (i) =>
+      i.status === 'added' ||
+      i.status === 'ignored' ||
+      (i.status === 'duplicate' && !needsDupCheck(i)),
+  );
+  const askLoan = transactions.filter((t) => t.askLoan);
 
   const suggestions = useMemo(() => {
     const ctx = {
@@ -60,14 +76,45 @@ export function Inbox() {
       fresh.map((i) => [i.id, suggest(i.parsed, { ...ctx, receivedAt: i.receivedAt })]),
     );
   }, [fresh, accounts, rules, transactions, meta.accountHints]);
-  const readyCount = [...suggestions.values()].filter((s) => s.ready).length;
+
+  // Unknown accounts, grouped: one question per account, not per message.
+  const groups = useMemo(() => {
+    const m = new Map<string, InboxItem[]>();
+    for (const i of fresh) {
+      const s = suggestions.get(i.id);
+      if (!s || s.accountId || !(i.parsed.last4 || i.parsed.bank || i.parsed.walletName)) continue;
+      const k = accountHintKey(i.parsed);
+      m.set(k, [...(m.get(k) ?? []), i]);
+    }
+    return [...m.entries()];
+  }, [fresh, suggestions]);
+  const grouped = new Set(groups.flatMap(([, items]) => items.map((i) => i.id)));
+  const ready = fresh.filter((i) => suggestions.get(i.id)?.ready);
+  const other = fresh.filter((i) => !grouped.has(i.id) && !suggestions.get(i.id)?.ready);
+
+  // New accounts or rules can make waiting messages ready: add them on their own.
+  const adding = useRef(false);
+  useEffect(() => {
+    if (!autoAdd || !ready.length || adding.current) return;
+    adding.current = true;
+    void addAllReady().finally(() => (adding.current = false));
+  }, [autoAdd, ready.length]);
+
+  const weekAgo = addDays(today, -7);
+  const autoThisWeek = transactions.filter(
+    (t) =>
+      (t.source === 'sms' || t.source === 'notification') && t.createdAt.slice(0, 10) >= weekAgo,
+  ).length;
+  const needYou =
+    askLoan.length + groups.length + dups.length + other.length + (autoAdd ? 0 : ready.length);
 
   const read = async () => {
     if (!text.trim()) return;
     setBusy(true);
     try {
       const s = await ingestMessages(text, { source: 'paste', receivedAt: today });
-      setResult(summaryText(s));
+      const added = autoAdd ? await addAllReady() : 0;
+      setResult(summaryText(s, added));
       setText('');
     } finally {
       setBusy(false);
@@ -80,20 +127,83 @@ export function Inbox() {
         <div>
           <h1>Inbox</h1>
           <p className="muted" style={{ margin: 0, fontSize: 'var(--fs-sm)' }}>
-            Bank messages turn into transactions here. Nothing is added until you say so.
+            {needYou
+              ? `${needYou} need${needYou === 1 ? 's' : ''} you. Everything else is already added.`
+              : 'Nothing needs you. New payments are added automatically.'}
           </p>
         </div>
       </div>
 
-      <Panel title="Paste bank SMS">
-        <div className="stack">
+      {askLoan.map((t) => (
+        <PersonCard key={t.id} txn={t} />
+      ))}
+
+      {groups.map(([key, items]) => (
+        <NewAccountCard key={key} items={items} />
+      ))}
+
+      {dups.map((i) => (
+        <DupCard key={i.id} item={i} />
+      ))}
+
+      {other.map((i) => (
+        <ReviewCard key={`${i.id}-${accounts.length}`} item={i} s={suggestions.get(i.id)!} />
+      ))}
+
+      {!autoAdd && ready.length > 0 && (
+        <section className="stack" aria-label="Ready to add">
+          <div className="row" style={{ flexWrap: 'wrap' }}>
+            <h2 style={{ fontSize: 'var(--fs-md)' }}>Ready to add ({ready.length})</h2>
+            <span className="spacer" />
+            <button
+              className="btn btn-primary"
+              onClick={async () => {
+                const n = await addAllReady();
+                toast(`Added ${n} transaction${n === 1 ? '' : 's'}`);
+              }}
+            >
+              <Icon name="check" size={16} />
+              Add all
+            </button>
+          </div>
+          {ready.map((i) => (
+            <ReviewCard key={i.id} item={i} s={suggestions.get(i.id)!} />
+          ))}
+        </section>
+      )}
+
+      {needYou === 0 && (
+        <section className="panel">
+          <EmptyState
+            title="All clear"
+            body="Payments from your bank messages are added on their own. Anything unclear — a new account, a possible duplicate, a payment to a friend — shows up here."
+          />
+        </section>
+      )}
+
+      {autoThisWeek > 0 && (
+        <button className="auto-link" onClick={() => go('transactions')}>
+          <span>
+            <b>{autoThisWeek} added automatically this week</b>
+            <span>Tap any in Activity to fix it.</span>
+          </span>
+          <Icon name="right" size={18} />
+        </button>
+      )}
+
+      <details className="panel paste-details" open={!inbox.length && !transactions.length}>
+        <summary>
+          <Icon name="message" size={16} />
+          Paste bank messages
+        </summary>
+        <div className="stack" style={{ marginTop: 'var(--sp-3)' }}>
           <label className="sr-only" htmlFor="sms-paste">
             Messages
           </label>
           <textarea
             id="sms-paste"
             className="input paste-box"
-            rows={fresh.length ? 3 : 6}
+            rows={4}
             placeholder={
               'Copy one or more messages from your SMS app and paste them here.\nLeave a blank line between messages.'
             }
@@ -114,54 +224,14 @@ export function Inbox() {
             </div>
           )}
         </div>
-      </Panel>
-
-      {fresh.length > 0 && (
-        <section className="stack" aria-label="To review">
-          <div className="row" style={{ flexWrap: 'wrap' }}>
-            <h2 style={{ fontSize: 'var(--fs-md)' }}>To review ({fresh.length})</h2>
-            <span className="spacer" />
-            {readyCount > 0 && (
-              <button
-                className="btn btn-primary"
-                onClick={async () => {
-                  const n = await addAllReady();
-                  toast(`Added ${n} transaction${n === 1 ? '' : 's'}`);
-                }}
-              >
-                <Icon name="check" size={16} />
-                Add {readyCount} ready
-              </button>
-            )}
-          </div>
-          {fresh.map((i) => (
-            <ReviewCard key={`${i.id}-${accounts.length}`} item={i} s={suggestions.get(i.id)!} />
-          ))}
-        </section>
-      )}
-
-      {fresh.length === 0 && inbox.length === 0 && (
-        <section className="panel">
-          <EmptyState
-            title="Nothing to review"
-            body="Paste a few bank or card messages above. Hisaab reads the amount, account, merchant and date, and suggests a category. The Android app (next phase) will do this automatically."
-          />
-        </section>
-      )}
-
-      {dups.length > 0 && (
-        <Panel title={`Probably already recorded (${dups.length})`}>
-          <div className="list">
-            {dups.map((i) => (
-              <DuplicateRow key={i.id} item={i} />
-            ))}
-          </div>
-        </Panel>
-      )}
+      </details>
 
       {notices.length > 0 && (
-        <Panel title={`Autopay & EMI notices (${notices.length})`}>
-          <p className="faint" style={{ margin: '0 0 8px', fontSize: 'var(--fs-sm)' }}>
+        <details className="panel">
+          <summary className="row" style={{ cursor: 'pointer' }}>
+            <b>Autopay & EMI notices ({notices.length})</b>
+          </summary>
+          <p className="faint" style={{ margin: '8px 0', fontSize: 'var(--fs-sm)' }}>
             These aren’t payments yet. Autopay and EMI tracking will use them in the coming phases.
           </p>
           <div className="list">
@@ -169,13 +239,13 @@ export function Inbox() {
               <NoticeRow key={i.id} item={i} />
             ))}
           </div>
-        </Panel>
+        </details>
       )}
 
       {handled.length > 0 && (
         <details className="panel">
           <summary className="row" style={{ cursor: 'pointer' }}>
-            <b>Handled ({handled.length})</b>
+            <b>Handled messages ({handled.length})</b>
           </summary>
           <div className="list" style={{ marginTop: 8 }}>
             {handled.slice(0, 50).map((i) => (
@@ -190,7 +260,7 @@ export function Inbox() {
                     {i.rawText.slice(0, 70)}
                   </div>
                 </div>
-                {i.status === 'ignored' && i.parsed.kind !== 'ignore' && (
+                {i.status !== 'added' && i.parsed.kind !== 'ignore' && (
                   <button className="btn" onClick={() => restoreInboxItem(i.id)}>
                     Review again
                   </button>
@@ -211,8 +281,247 @@ export function Inbox() {
   );
 }
 
-function ReviewCard({ item, s }: { item: InboxItem; s: Suggestion }) {
-  const { activeAccounts, categories, accountById } = useStore();
+/** "Spent or lent?" for a payment to (or from) a person. Changes that transaction; never adds one. */
+function PersonCard({ txn }: { txn: Transaction }) {
+  const { accountById } = useStore();
+  const { toast } = useUI();
+  const person = txn.merchant ?? 'Someone';
+  const out = txn.kind === 'expense';
+  const [preferred, setPreferred] = useState<PersonChoice>();
+  const [canRepay, setCanRepay] = useState(false);
+  const [splitting, setSplitting] = useState(false);
+  const [friend, setFriend] = useState('');
+  const [share, setShare] = useState('');
+  const [error, setError] = useState('');
+  useEffect(() => {
+    void suggestedChoice(txn, person).then(setPreferred);
+    void openDebtsWith(person, out ? 'borrowed' : 'lent').then((d) => setCanRepay(d.length > 0));
+  }, [txn, person, out]);
+
+  const choices: { c: PersonChoice; label: string }[] = out
+    ? [
+        { c: 'spent', label: 'Spent' },
+        { c: 'lent', label: 'Lent' },
+        ...(canRepay ? [{ c: 'repay_them' as const, label: 'Paid back' }] : []),
+      ]
+    : [
+        ...(canRepay ? [{ c: 'repaid_me' as const, label: 'Paid me back' }] : []),
+        { c: 'income', label: 'Income' },
+        { c: 'borrowed', label: 'Borrowed' },
+      ];
+
+  const answer = async (c: PersonChoice) => {
+    await resolvePersonPayment(txn.id, person, c);
+    toast(
+      c === 'spent' || c === 'income'
+        ? `Kept as ${c === 'spent' ? 'spending' : 'income'} · won’t ask about ${person} again`
+        : c === 'lent'
+          ? `Lent to ${person} — see Lent & borrowed`
+          : c === 'borrowed'
+            ? `Borrowed from ${person}`
+            : 'Loan updated',
+    );
+  };
+
+  const split = async () => {
+    try {
+      setError('');
+      await splitWithFriends(txn.id, [{ person: friend, amount: toPaise(share || '0') }]);
+      toast(`${formatINR(toPaise(share))} lent to ${friend.trim()}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not split.');
+    }
+  };
+
+  return (
+    <article className="panel needs-card">
+      <div className="needs-label is-person">{out ? 'Spent or lent?' : 'Money from a person'}</div>
+      <div className="row" style={{ alignItems: 'baseline' }}>
+        <div className="item-main">
+          <div className="item-title">{person}</div>
+          <div className="item-sub">
+            {formatDate(txn.date)} · {accountById.get(txn.accountId)?.name ?? ''}
+          </div>
+        </div>
+        <span className={`num ${out ? '' : 'amt-income'}`} style={{ fontWeight: 600 }}>
+          {out ? '' : '+'}
+          {formatINR(txn.amount)}
+        </span>
+      </div>
+      <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+        {choices.map(({ c, label }) => (
+          <button
+            key={c}
+            className={`btn ${preferred === c ? 'btn-primary' : ''}`}
+            onClick={() => answer(c)}
+          >
+            {label}
+          </button>
+        ))}
+        {out && !splitting && (
+          <button className="link-btn" onClick={() => setSplitting(true)}>
+            Split with a friend
+          </button>
+        )}
+      </div>
+      {splitting && (
+        <div className="stack" style={{ gap: 'var(--sp-2)' }}>
+          <div className="grid-2" style={{ gap: 'var(--sp-2)' }}>
+            <Field label="Friend" htmlFor={`f-${txn.id}`}>
+              <input
+                id={`f-${txn.id}`}
+                className="input"
+                value={friend}
+                onChange={(e) => setFriend(e.target.value)}
+              />
+            </Field>
+            <Field label="Their share" htmlFor={`s-${txn.id}`}>
+              <input
+                id={`s-${txn.id}`}
+                className="input num"
+                inputMode="decimal"
+                value={share}
+                onChange={(e) => setShare(cleanAmountInput(e.target.value, share))}
+              />
+            </Field>
+          </div>
+          <ErrorNote message={error} />
+          <div className="row" style={{ gap: 'var(--sp-2)' }}>
+            <button className="btn btn-primary" onClick={split} disabled={!friend.trim() || !share}>
+              Save split
+            </button>
+            <button className="btn" onClick={() => setSplitting(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </article>
+  );
+}
+
+/** Messages from an account we don't know yet, as one question. */
+function NewAccountCard({ items }: { items: InboxItem[] }) {
+  const { openAccount, toast } = useUI();
+  const { meta } = useStore();
+  const p = items[0]!.parsed;
+  const total = items.reduce((s, i) => s + (i.parsed.amount ?? 0), 0);
+  const since = items.map((i) => i.parsed.date ?? i.receivedAt).sort()[0]!;
+  const isCard = p.instrument === 'credit_card' || p.kind === 'card_payment';
+  const isWallet = p.instrument === 'wallet' || p.instrument === 'upi_lite';
+  const bank = p.bank?.replace(/ Bank$/, '');
+  const name = isWallet
+    ? `${p.walletName ?? 'UPI Lite'}${p.walletName ? ' wallet' : ''}`
+    : `${bank ? `${bank} ` : ''}${isCard ? 'Credit Card' : p.instrument === 'debit_card' ? 'Debit Card' : 'Bank'}${p.last4 ? ` ••${p.last4}` : ''}`;
+  return (
+    <article className="panel needs-card">
+      <div className="needs-label is-account">New account found</div>
+      <div className="item-main">
+        <div className="item-title">{name}</div>
+        <div className="item-sub">
+          {items.length} payment{items.length === 1 ? '' : 's'} since {formatDate(since)} ·{' '}
+          {formatINR(total)}
+        </div>
+      </div>
+      <div className="row" style={{ gap: 'var(--sp-2)' }}>
+        <button
+          className="btn btn-primary"
+          onClick={() =>
+            openAccount({
+              kind: isCard ? 'credit_card' : isWallet ? 'wallet' : 'bank',
+              last4: p.last4,
+              institution: p.bank ?? p.walletName,
+              name,
+            })
+          }
+        >
+          Add account
+        </button>
+        <button
+          className="btn"
+          onClick={async () => {
+            if (p.last4) await setMeta('notMine', [...((meta.notMine as string[]) ?? []), p.last4]);
+            for (const i of items) await ignoreInboxItem(i.id, 'Not your account');
+            toast('Set aside — we won’t ask about it again');
+          }}
+        >
+          Not mine
+        </button>
+      </div>
+    </article>
+  );
+}
+
+/** A possible repeat we're not sure about. */
+function DupCard({ item }: { item: InboxItem }) {
+  const { transactions, accounts, rules, meta } = useStore();
+  const { toast } = useUI();
+  const t = transactions.find((x) => x.id === item.duplicateOf);
+  const addAnyway = async () => {
+    const s = suggest(item.parsed, {
+      accounts,
+      rules,
+      transactions,
+      receivedAt: item.receivedAt,
+      accountHints: (meta.accountHints as Record<string, string>) ?? {},
+    });
+    if (!s.accountId) {
+      await restoreInboxItem(item.id);
+      return;
+    }
+    await addFromInbox(item.id, {
+      kind: s.kind,
+      amount: s.amount,
+      date: s.date,
+      accountId: s.accountId,
+      toAccountId: s.toAccountId,
+      categoryId: s.categoryId,
+      merchant: s.merchant,
+      paymentMode: s.paymentMode,
+      externalRef: s.externalRef,
+    });
+    toast('Added as a separate payment');
+  };
+  return (
+    <article className="panel needs-card">
+      <div className="needs-label is-dup">Maybe counted twice</div>
+      <div className="item-main">
+        <div className="item-title">
+          {item.parsed.merchant ?? t?.merchant ?? 'Payment'} · {formatINR(item.parsed.amount ?? 0)}
+        </div>
+        <div className="item-sub" style={{ whiteSpace: 'normal' }}>
+          {item.note}
+          {t ? ` — already have ${formatINR(t.amount)} on ${formatDate(t.date)}` : ''}
+        </div>
+      </div>
+      <div className="row" style={{ gap: 'var(--sp-2)' }}>
+        <button
+          className="btn btn-primary"
+          onClick={() => ignoreInboxItem(item.id, 'Same payment (you confirmed)')}
+        >
+          Same payment
+        </button>
+        <button className="btn" onClick={addAnyway}>
+          Two payments
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function ReviewCard({
+  item,
+  s,
+  duplicate,
+}: {
+  item: InboxItem;
+  s: Suggestion;
+  /** 'added' if a transaction with this reference exists, else the id of the matching message. */
+  duplicate?: string;
+}) {
+  const { activeAccounts, categories, accountById, categoryById } = useStore();
+  // Messages Hisaab fully understood start as a one-line summary; the rest open for editing.
+  const [editing, setEditing] = useState(!s.ready);
   const { openAccount, toast } = useUI();
   const [kind, setKind] = useState<TxnKind>(s.kind);
   const [amount, setAmount] = useState(String(toRupees(s.amount)));
@@ -287,7 +596,7 @@ function ReviewCard({ item, s }: { item: InboxItem; s: Suggestion }) {
           {formatINR(toPaise(amount || '0'))}
         </span>
         <span
-          className={`pill ${kind === 'transfer' ? 'pill-neutral' : kind === 'expense' ? 'pill-cycle' : 'pill-ok'}`}
+          className={`pill ${kind === 'income' || kind === 'refund' ? 'pill-ok' : 'pill-neutral'}`}
         >
           {p.kind === 'card_payment'
             ? 'Card bill payment'
@@ -302,113 +611,153 @@ function ReviewCard({ item, s }: { item: InboxItem; s: Suggestion }) {
         </span>
       </div>
 
-      <div className="grid-2 review-fields">
-        {kind !== 'transfer' && (
-          <Field label={kind === 'income' ? 'From' : 'Paid to'} htmlFor={`m-${item.id}`}>
-            <input
-              id={`m-${item.id}`}
-              className="input"
-              value={merchant}
-              placeholder="Merchant or person"
-              onChange={(e) => setMerchant(e.target.value)}
-            />
-          </Field>
-        )}
-        {kind !== 'transfer' && (
-          <Field label="Category" htmlFor={`c-${item.id}`}>
+      {duplicate && (
+        <div className="note note-warn row" style={{ flexWrap: 'wrap' }}>
+          <span>
+            {duplicate === 'added'
+              ? 'Looks already added — a transaction has the same reference number.'
+              : 'Same reference number as another message here — probably the same payment.'}
+          </span>
+          <span className="spacer" />
+          <button
+            className="btn btn-sm"
+            onClick={() => ignoreInboxItem(item.id, 'Duplicate message')}
+          >
+            Ignore duplicate
+          </button>
+        </div>
+      )}
+
+      {!editing && (
+        <div className="review-summary">
+          {kind !== 'transfer' && <CategoryAvatar category={categoryById.get(categoryId)} />}
+          <div className="item-main">
+            <div className="item-title">
+              {kind === 'transfer'
+                ? `${accountById.get(accountId)?.name ?? '?'} → ${accountById.get(toAccountId)?.name ?? '?'}`
+                : merchant || 'Unknown merchant'}
+            </div>
+            <div className="item-sub">
+              {[
+                kind !== 'transfer' && (categoryById.get(categoryId)?.name ?? 'No category'),
+                kind !== 'transfer' && accountById.get(accountId)?.name,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editing && (
+        <div className="grid-2 review-fields">
+          {kind !== 'transfer' && (
+            <Field label={kind === 'income' ? 'From' : 'Paid to'} htmlFor={`m-${item.id}`}>
+              <input
+                id={`m-${item.id}`}
+                className="input"
+                value={merchant}
+                placeholder="Merchant or person"
+                onChange={(e) => setMerchant(e.target.value)}
+              />
+            </Field>
+          )}
+          {kind !== 'transfer' && (
+            <Field label="Category" htmlFor={`c-${item.id}`}>
+              <select
+                id={`c-${item.id}`}
+                className="input"
+                value={categoryId}
+                onChange={(e) => setCategoryId(e.target.value)}
+              >
+                <option value="">Choose…</option>
+                {cats.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.parentId ? `  ${c.name}` : c.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          <Field
+            label={
+              kind === 'transfer'
+                ? 'From'
+                : kind === 'income' || kind === 'refund'
+                  ? 'Into'
+                  : 'Paid from'
+            }
+            htmlFor={`a-${item.id}`}
+          >
             <select
-              id={`c-${item.id}`}
+              id={`a-${item.id}`}
               className="input"
-              value={categoryId}
-              onChange={(e) => setCategoryId(e.target.value)}
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
             >
-              <option value="">Choose…</option>
-              {cats.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.parentId ? `  ${c.name}` : c.name}
+              <option value="">Choose account…</option>
+              {activeAccounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                  {a.last4 ? ` •• ${a.last4}` : ''}
                 </option>
               ))}
             </select>
           </Field>
-        )}
-        <Field
-          label={
-            kind === 'transfer'
-              ? 'From'
-              : kind === 'income' || kind === 'refund'
-                ? 'Into'
-                : 'Paid from'
-          }
-          htmlFor={`a-${item.id}`}
-        >
-          <select
-            id={`a-${item.id}`}
-            className="input"
-            value={accountId}
-            onChange={(e) => setAccountId(e.target.value)}
-          >
-            <option value="">Choose account…</option>
-            {activeAccounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-                {a.last4 ? ` •• ${a.last4}` : ''}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {kind === 'transfer' && (
-          <Field label="To" htmlFor={`t-${item.id}`}>
+          {kind === 'transfer' && (
+            <Field label="To" htmlFor={`t-${item.id}`}>
+              <select
+                id={`t-${item.id}`}
+                className="input"
+                value={toAccountId}
+                onChange={(e) => setToAccountId(e.target.value)}
+              >
+                <option value="">Choose account…</option>
+                {activeAccounts
+                  .filter((a) => a.id !== accountId)
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name}
+                    </option>
+                  ))}
+              </select>
+            </Field>
+          )}
+          <Field label="Type" htmlFor={`k-${item.id}`}>
             <select
-              id={`t-${item.id}`}
+              id={`k-${item.id}`}
               className="input"
-              value={toAccountId}
-              onChange={(e) => setToAccountId(e.target.value)}
+              value={kind}
+              onChange={(e) => setKind(e.target.value as TxnKind)}
             >
-              <option value="">Choose account…</option>
-              {activeAccounts
-                .filter((a) => a.id !== accountId)
-                .map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.name}
-                  </option>
-                ))}
+              <option value="expense">Spending</option>
+              <option value="income">Income</option>
+              <option value="refund">Refund</option>
+              <option value="transfer">Transfer between my accounts</option>
             </select>
           </Field>
-        )}
-        <Field label="Type" htmlFor={`k-${item.id}`}>
-          <select
-            id={`k-${item.id}`}
-            className="input"
-            value={kind}
-            onChange={(e) => setKind(e.target.value as TxnKind)}
-          >
-            <option value="expense">Spending</option>
-            <option value="income">Income</option>
-            <option value="refund">Refund</option>
-            <option value="transfer">Transfer between my accounts</option>
-          </select>
-        </Field>
-        <div className="grid-2" style={{ gap: 'var(--sp-3)' }}>
-          <Field label="Amount" htmlFor={`v-${item.id}`}>
-            <input
-              id={`v-${item.id}`}
-              className="input num"
-              inputMode="decimal"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value.replace(/[^\d.]/g, ''))}
-            />
-          </Field>
-          <Field label="Date" htmlFor={`d-${item.id}`}>
-            <input
-              id={`d-${item.id}`}
-              type="date"
-              className="input"
-              value={date}
-              onChange={(e) => e.target.value && setDate(e.target.value)}
-            />
-          </Field>
+          <div className="grid-2" style={{ gap: 'var(--sp-3)' }}>
+            <Field label="Amount" htmlFor={`v-${item.id}`}>
+              <input
+                id={`v-${item.id}`}
+                className="input num"
+                inputMode="decimal"
+                value={amount}
+                onChange={(e) => setAmount(cleanAmountInput(e.target.value, amount))}
+              />
+            </Field>
+            <Field label="Date" htmlFor={`d-${item.id}`}>
+              <input
+                id={`d-${item.id}`}
+                type="date"
+                className="input"
+                value={date}
+                onChange={(e) => e.target.value && setDate(e.target.value)}
+              />
+            </Field>
+          </div>
         </div>
-      </div>
+      )}
 
       {s.unknownLast4 && !accountId && (
         <div className="note note-cycle row" style={{ flexWrap: 'wrap' }}>
@@ -451,37 +800,17 @@ function ReviewCard({ item, s }: { item: InboxItem; s: Suggestion }) {
           Ignore
         </button>
         <span className="spacer" />
+        {!editing && (
+          <button className="btn" onClick={() => setEditing(true)}>
+            Edit
+          </button>
+        )}
         <button className="btn btn-primary" onClick={add}>
+          <Icon name="check" size={16} />
           Add
         </button>
       </div>
     </article>
-  );
-}
-
-function DuplicateRow({ item }: { item: InboxItem }) {
-  const { transactions, accountById } = useStore();
-  const t = transactions.find((x) => x.id === item.duplicateOf);
-  return (
-    <div className="item" style={{ flexWrap: 'wrap' }}>
-      <div className="item-main">
-        <div className="item-title">
-          {item.parsed.merchant ?? 'Message'} · {formatINR(item.parsed.amount ?? 0)}
-        </div>
-        <div className="item-sub">
-          {item.note}
-          {t
-            ? ` — you have ${formatINR(t.amount)} on ${formatDate(t.date)} in ${accountById.get(t.accountId)?.name ?? 'an account'}`
-            : ''}
-        </div>
-      </div>
-      <button className="btn" onClick={() => ignoreInboxItem(item.id)}>
-        Dismiss
-      </button>
-      <button className="btn" onClick={() => restoreInboxItem(item.id)}>
-        It’s new — review
-      </button>
-    </div>
   );
 }
 

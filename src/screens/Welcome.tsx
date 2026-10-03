@@ -10,46 +10,102 @@ import { sampleData, sampleMessages } from '../sample/sample';
 import { ingestMessages } from '../db/inbox';
 import { useStore } from '../store';
 import { useUI } from '../ui';
+import { SetupFromSms } from './SetupFromSms';
 
-/** First run: start with your own accounts, or explore with sample data. */
+/** First run: set up from bank SMS (or pasted messages), by hand, or with sample data. */
 export function Welcome() {
   const { today } = useStore();
-  const [step, setStep] = useState<'hello' | 'accounts'>('hello');
+  const [step, setStep] = useState<'hello' | 'accounts' | 'sms'>('hello');
   if (step === 'accounts') return <SetupAccounts />;
+  if (step === 'sms') return <SetupFromSms onBack={() => setStep('hello')} />;
   return (
-    <div className="welcome">
-      <div className="brand" style={{ fontSize: 'var(--fs-xl)' }}>
+    <div className="onb">
+      <div className="brand" style={{ fontSize: 'var(--fs-lg)' }}>
         <span className="brand-mark">₹</span>Hisaab
       </div>
-      <h1 className="welcome-title">
-        Know what you spent this month — and what each card will bill.
-      </h1>
-      <ul className="welcome-points muted">
+
+      <div className="stack" style={{ gap: 'var(--sp-3)' }}>
+        <h1 className="onb-title">What did you really spend this month?</h1>
+        <p className="onb-lead">
+          Card bills don’t follow the calendar. Hisaab counts each payment on the day you made it,
+          and never counts a card bill twice.
+        </p>
+      </div>
+
+      <div className="onb-bars" aria-label="Your month and a card bill cover different days">
+        <div className="onb-bar">
+          <div className="onb-bar-label">
+            <b>Your month</b>
+            <span>1 – 30 Sep</span>
+          </div>
+          <div className="onb-track">
+            <span style={{ left: '35%', right: 0, background: 'var(--accent)' }} />
+          </div>
+        </div>
+        <div className="onb-bar">
+          <div className="onb-bar-label">
+            <b>Card bill</b>
+            <span>16 Aug – 15 Sep</span>
+          </div>
+          <div className="onb-track">
+            <span style={{ left: 0, width: '67%', background: 'var(--cycle)' }} />
+          </div>
+        </div>
+      </div>
+
+      <ul className="onb-points">
         <li>
-          <Icon name="calendar" size={18} />
-          Spending counted on the day you spent it, across bank, cash, UPI and cards.
+          <Icon name="calendar" size={20} />
+          <span>
+            <b>Real monthly spend</b> <span className="muted">— by the day you paid</span>
+          </span>
         </li>
         <li>
-          <Icon name="card" size={18} />
-          Card statements kept separately, with due dates — bill payments never counted twice.
+          <Icon name="card" size={20} />
+          <span>
+            <b>Each card bill</b> <span className="muted">— what’s due and when</span>
+          </span>
         </li>
         <li>
-          <Icon name="check" size={18} />
-          Your data stays on this device. No bank login, no ads, no loans.
+          <Icon name="right" size={20} />
+          <span>
+            <b>Bill payments</b> <span className="muted">— moved, never counted twice</span>
+          </span>
         </li>
       </ul>
-      <div className="stack" style={{ width: '100%', maxWidth: 360 }}>
-        <button className="btn btn-primary btn-block" onClick={() => setStep('accounts')}>
-          Set up my accounts
+
+      <div className="onb-spacer" />
+
+      <div className="stack" style={{ gap: 'var(--sp-3)' }}>
+        <div className="onb-trust">
+          <div>
+            <Icon name="lock" size={18} />
+            Your data never leaves your phone
+          </div>
+          <div>
+            <Icon name="ban" size={18} />
+            No ads. No loan offers. Ever.
+          </div>
+        </div>
+        <button className="btn btn-primary btn-block onb-cta" onClick={() => setStep('sms')}>
+          <Icon name="message" size={20} />
+          Set up from my bank SMS
+        </button>
+        <p className="onb-sub">We find your accounts and cards. You just check them.</p>
+      </div>
+
+      <div className="onb-links">
+        <button className="link-btn" onClick={() => setStep('accounts')}>
+          Set up manually
         </button>
         <button
-          className="btn btn-block"
+          className="link-btn"
           onClick={async () => {
             await loadSample(sampleData(today));
             await ingestMessages(sampleMessages(today), { source: 'paste', receivedAt: today });
           }}
         >
-          Explore with sample data
+          Try sample data
         </button>
       </div>
     </div>

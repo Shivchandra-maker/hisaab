@@ -184,6 +184,18 @@ export function Settings() {
               <ConfirmButton
                 label="Restore pasted backup"
                 confirmLabel="Tap again — replaces everything on this device"
+                canArm={() => {
+                  // Don't arm a destructive button for text that can't be a backup.
+                  try {
+                    if (JSON.parse(importText)?.app === 'hisaab') return true;
+                  } catch {
+                    /* fall through */
+                  }
+                  setError(
+                    'This isn’t a Hisaab backup. Paste the whole text you copied or downloaded.',
+                  );
+                  return false;
+                }}
                 onConfirm={() => restore(importText)}
               />
             </div>
@@ -213,7 +225,7 @@ export function Settings() {
         </div>
       </Panel>
       <p className="faint" style={{ margin: 0, fontSize: 'var(--fs-xs)' }}>
-        Hisaab · Phase 1 · data stays on this device
+        Hisaab · data stays on this device
       </p>
     </div>
   );

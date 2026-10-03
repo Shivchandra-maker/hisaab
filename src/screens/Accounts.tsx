@@ -31,32 +31,25 @@ export function Accounts() {
         </button>
       </div>
 
-      <div className="grid-3">
-        <div className="panel">
+      <section className="panel summary-strip" aria-label="Money summary">
+        <div>
           <div className="label">You have</div>
-          <div className="num" style={{ fontSize: 'var(--fs-xl)', fontWeight: 600 }}>
-            {formatINR(r.cash)}
-          </div>
+          <div className="num v">{formatINR(r.cash)}</div>
         </div>
-        <div className="panel">
-          <div className="label">Owed to cards</div>
-          <div
-            className="num"
-            style={{ fontSize: 'var(--fs-xl)', fontWeight: 600, color: 'var(--cycle)' }}
-          >
+        <div>
+          <div className="label">Card dues</div>
+          <div className="num v" style={{ color: 'var(--cycle)' }}>
+            {r.owedToCards > 0 ? '−' : ''}
             {formatINR(r.owedToCards)}
           </div>
         </div>
-        <div className="panel">
+        <div>
           <div className="label">Free to spend</div>
-          <div
-            className="num"
-            style={{ fontSize: 'var(--fs-xl)', fontWeight: 600, color: 'var(--accent)' }}
-          >
+          <div className="num v" style={{ color: 'var(--accent)' }}>
             {formatINR(r.freeToSpend)}
           </div>
         </div>
-      </div>
+      </section>
 
       {cards.length > 0 && (
         <Panel title="Credit cards">
@@ -84,12 +77,15 @@ export function Accounts() {
                         <StatusPill status={s.dueStatus}>
                           {formatINR(s.dueNow)} due {formatDate(s.dueDate!)}
                         </StatusPill>
-                      ) : (
+                      ) : s.lastStatement.totalDue > 0 ? (
                         <StatusPill status="paid">Last bill paid</StatusPill>
+                      ) : (
+                        <StatusPill status="open">No bill yet</StatusPill>
                       )}
                       <span>
-                        Statement on {formatDate(s.currentPeriod.end)} ·{' '}
-                        {Math.round(s.utilisation * 100)}% of limit
+                        Next statement {formatDate(s.currentPeriod.end)}
+                        {c.card!.creditLimit > 0 &&
+                          ` · ${Math.round(s.utilisation * 100)}% of limit used`}
                       </span>
                     </div>
                   </div>

@@ -332,3 +332,31 @@ describe("real messages from the owner's phone (numbers changed)", () => {
     expect(p.date).toBeUndefined();
   });
 });
+
+describe('card statements', () => {
+  it('reads total due, minimum due and due date, and never makes a payment', () => {
+    const p = parseSms(
+      'Statement for HDFC Bank Credit Card XX8834 is generated. Total Amt Due: Rs.12,345.00 Min Amt Due: Rs.620.00 Due Date: 05-10-2026. Pay now: hdfc.bank.in/x',
+    );
+    expect(p).toMatchObject({
+      kind: 'ignore',
+      reason: 'Card statement',
+      instrument: 'credit_card',
+      last4: '8834',
+      bank: 'HDFC Bank',
+      statement: { totalDue: 1234500, minDue: 62000, dueDate: '2026-10-05' },
+    });
+  });
+  it('handles other wordings', () => {
+    const a = parseSms(
+      'Your ICICI Bank Credit Card XX2207 statement has been sent to your email. Total amount due INR 4,560.50, minimum amount due INR 230. Payment due date 02-Nov-26.',
+    );
+    expect(a.statement).toEqual({ totalDue: 456050, minDue: 23000, dueDate: '2026-11-02' });
+    expect(a.last4).toBe('2207');
+    const b = parseSms(
+      'Dear Customer, your SBI Card ending 1122 e-statement dated 20/09/2026 is ready. Total Amount Due Rs 8,000; Minimum Amount Due Rs 400; Payment Due Date 10/10/2026',
+    );
+    expect(b.statement).toEqual({ totalDue: 800000, minDue: 40000, dueDate: '2026-10-10' });
+    expect(b.date).toBe('2026-09-20');
+  });
+});

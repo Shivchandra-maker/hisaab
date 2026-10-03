@@ -47,7 +47,7 @@ export function syncCaptured(): Promise<IngestSummary | null> {
       if (!items.length) return null;
       const summary = await ingestCaptured(items);
       await Capture.ack({ ids: items.map((i) => i.id) });
-      if (await getMeta<boolean>('autoAdd', false)) await addAllReady();
+      if (await getMeta<boolean>('autoAdd', true)) await addAllReady();
       return summary;
     } finally {
       syncing = null;
@@ -95,7 +95,7 @@ export async function importPastMessages(
     addTotals(total, await ingestCaptured(sorted.slice(i, i + CHUNK)));
     onProgress?.(Math.min(i + CHUNK, sorted.length), sorted.length);
   }
-  if (await getMeta<boolean>('autoAdd', false)) await addAllReady();
+  if (await getMeta<boolean>('autoAdd', true)) await addAllReady();
   return total;
 }
 

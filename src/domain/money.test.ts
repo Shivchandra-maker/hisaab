@@ -1,4 +1,4 @@
-import { formatINR, formatINRCompact, toPaise } from './money';
+import { cleanAmountInput, formatINR, formatINRCompact, toPaise } from './money';
 import { ordinal, todayIST } from './dates';
 
 describe('money', () => {
@@ -31,5 +31,17 @@ describe('money', () => {
   it("today is computed in IST, not the device's zone", () => {
     // 20:00 UTC on 30 Sep is 01:30 on 1 Oct in India.
     expect(todayIST(new Date('2026-09-30T20:00:00Z'))).toBe('2026-10-01');
+  });
+});
+
+describe('cleanAmountInput', () => {
+  it('keeps digits, commas and two decimals', () => {
+    expect(cleanAmountInput('1,250.505')).toBe('1,250.50');
+    expect(cleanAmountInput('₹ 499')).toBe('499');
+    expect(cleanAmountInput('12.3.4')).toBe('12.34');
+  });
+  it('refuses keystrokes that are not part of an amount', () => {
+    expect(cleanAmountInput('1e', '1')).toBe('1');
+    expect(cleanAmountInput('-5', '')).toBe('');
   });
 });

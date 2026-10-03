@@ -1,9 +1,10 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { formatINR, formatINRCompact } from '../domain/money';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { cleanAmountInput, formatINR, formatINRCompact } from '../domain/money';
 import { formatMonth } from '../domain/dates';
 import type { Account, Category, MonthKey, Paise, TxnKind } from '../domain/types';
 import type { StatementStatus } from '../domain/ledger';
 import { Icon } from './Icon';
+import type React from 'react';
 
 export const catColor = (c?: Pick<Category, 'color'>) => `var(--${c?.color ?? 'cat-6'})`;
 
@@ -49,7 +50,9 @@ export function MonthSwitcher({
       <button className="icon-btn" onClick={() => shift(-1)} aria-label="Previous month">
         <Icon name="left" size={18} />
       </button>
-      <span className="m">{formatMonth(month)}</span>
+      <span className="m" aria-live="polite">
+        {formatMonth(month)}
+      </span>
       <button
         className="icon-btn"
         onClick={() => shift(1)}
@@ -88,7 +91,7 @@ export function CategoryAvatar({ category, small }: { category?: Category; small
   return (
     <span
       className={`avatar ${small ? 'avatar-sm' : ''}`}
-      style={{ background: catColor(category) }}
+      style={{ '--c': catColor(category) } as React.CSSProperties}
     >
       <Icon name={category?.icon ?? 'dots'} size={small ? 15 : 18} />
     </span>
@@ -110,7 +113,10 @@ export function AccountAvatar({ account, small }: { account: Account; small?: bo
         ? 'var(--cat-2)'
         : 'var(--accent)';
   return (
-    <span className={`avatar ${small ? 'avatar-sm' : ''}`} style={{ background: bg }}>
+    <span
+      className={`avatar ${small ? 'avatar-sm' : ''}`}
+      style={{ '--c': bg } as React.CSSProperties}
+    >
       <Icon name={accountIcon[account.kind]} size={small ? 15 : 18} />
     </span>
   );
@@ -180,6 +186,22 @@ export function Panel({
   );
 }
 
+/** Width of an element in CSS pixels, so charts draw text at its real size on every screen. */
+export function useWidth<T extends HTMLElement>(fallback = 640) {
+  const ref = useRef<T>(null);
+  const [w, setW] = useState(fallback);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setW(el.clientWidth || fallback);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([e]) => e && setW(Math.round(e.contentRect.width) || fallback));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fallback]);
+  return [ref, w] as const;
+}
+
 /** Vertical bars drawn to one scale, with a light grid and value labels. */
 export function BarChart({
   values,
@@ -188,6 +210,8 @@ export function BarChart({
   height = 160,
   showValues,
   variant = 'accent',
+  label = 'Bar chart',
+  average,
 }: {
   values: Paise[];
   labels: (string | null)[];
@@ -195,55 +219,164 @@ export function BarChart({
   height?: number;
   showValues?: boolean;
   variant?: 'accent' | 'cycle';
+  label?: string;
+  /** Draws a dashed reference line (e.g. the monthly average). */
+  average?: Paise;
 }) {
-  const W = 640;
-  const padL = 44;
-  const padR = 8;
-  const padT = showValues ? 18 : 8;
+  const [ref, W] = useWidth<HTMLDivElement>();
+  const padL = 40;
+  const padR = 4;
+  const padT = showValues ? 20 : 8;
   const padB = 22;
-  const max = niceMax(Math.max(...values, 1));
+  const max = niceMax(Math.max(...values, average ?? 0, 1));
   const innerH = height - padT - padB;
   const step = (W - padL - padR) / values.length;
-  const bw = Math.max(2, Math.min(36, step * 0.62));
+  const bw = Math.max(2, Math.min(40, step * 0.6));
   const y = (v: number) => padT + innerH - (Math.max(0, v) / max) * innerH;
   const ticks = [0, max / 2, max];
+  // Leave out value labels that would collide on narrow screens.
+  const valuesFit = step >= 34;
   return (
-    <svg className="chart" viewBox={`0 0 ${W} ${height}`} role="img" aria-label="Bar chart">
-      {ticks.map((t) => (
-        <g key={t}>
-          <line className="grid" x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} />
-          <text className="axis" x={padL - 6} y={y(t) + 4} textAnchor="end">
-            {formatINRCompact(t)}
-          </text>
-        </g>
-      ))}
-      {values.map((v, i) => {
-        const x = padL + i * step + (step - bw) / 2;
-        const top = y(v);
-        return (
-          <g key={i}>
-            <rect
-              className={`b ${variant === 'cycle' ? 'c' : ''} ${highlight === undefined || highlight === i ? 'hi' : ''}`}
-              x={x}
-              y={top}
-              width={bw}
-              height={Math.max(0, padT + innerH - top)}
-              rx={Math.min(4, bw / 3)}
-            />
-            {showValues && v > 0 && (
-              <text className="val" x={x + bw / 2} y={top - 5} textAnchor="middle">
-                {formatINRCompact(v)}
-              </text>
-            )}
-            {labels[i] && (
-              <text className="axis" x={x + bw / 2} y={height - 6} textAnchor="middle">
-                {labels[i]}
-              </text>
-            )}
+    <div ref={ref} className="chart-wrap">
+      <svg
+        className="chart"
+        width={W}
+        height={height}
+        viewBox={`0 0 ${W} ${height}`}
+        role="img"
+        aria-label={label}
+      >
+        {ticks.map((t) => (
+          <g key={t}>
+            <line className="grid" x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} />
+            <text className="axis" x={padL - 6} y={y(t) + 4} textAnchor="end">
+              {formatINRCompact(t)}
+            </text>
           </g>
-        );
-      })}
-    </svg>
+        ))}
+        {average !== undefined && average > 0 && (
+          <line className="avg" x1={padL} x2={W - padR} y1={y(average)} y2={y(average)} />
+        )}
+        {values.map((v, i) => {
+          const x = padL + i * step + (step - bw) / 2;
+          const top = y(v);
+          const hi = highlight === undefined || highlight === i;
+          return (
+            <g key={i}>
+              <title>{`${labels[i] ?? i + 1}: ${formatINR(v)}`}</title>
+              <rect
+                className={`b ${variant === 'cycle' ? 'c' : ''} ${hi ? 'hi' : ''}`}
+                x={x}
+                y={top}
+                width={bw}
+                height={Math.max(v > 0 ? 2 : 0, padT + innerH - top)}
+                rx={Math.min(5, bw / 3)}
+              />
+              {showValues && valuesFit && v > 0 && (
+                <text
+                  className={`val ${hi ? 'val-hi' : ''}`}
+                  x={x + bw / 2}
+                  y={top - 6}
+                  textAnchor="middle"
+                >
+                  {formatINRCompact(v)}
+                </text>
+              )}
+              {labels[i] && (
+                <text
+                  className={`axis ${highlight === i ? 'axis-hi' : ''}`}
+                  x={x + bw / 2}
+                  y={height - 5}
+                  textAnchor="middle"
+                >
+                  {labels[i]}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+/**
+ * Running total through the month, against the same days last month — "am I spending faster
+ * than usual?" (the pace view used by Copilot and Monzo Trends).
+ */
+export function PaceChart({
+  current,
+  previous,
+  upTo,
+  height = 120,
+  label,
+}: {
+  /** Daily spend for this month (one value per day). */
+  current: Paise[];
+  /** Daily spend for last month. */
+  previous: Paise[];
+  /** Days of this month that have happened (draw the line only that far). */
+  upTo: number;
+  height?: number;
+  label: string;
+}) {
+  const [ref, W] = useWidth<HTMLDivElement>();
+  const cum = (xs: Paise[]) => {
+    let n = 0;
+    return xs.map((v) => (n += Math.max(0, v)));
+  };
+  const c = cum(current).slice(0, upTo);
+  const p = cum(previous);
+  const days = Math.max(current.length, previous.length, 28);
+  const max = niceMax(Math.max(...c, ...p, 1));
+  const padT = 8;
+  const padB = 18;
+  const padX = 2;
+  const x = (i: number) => padX + (i / (days - 1)) * (W - padX * 2);
+  const y = (v: number) => padT + (height - padT - padB) * (1 - v / max);
+  const path = (xs: number[]) =>
+    xs.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const last = c.length - 1;
+  const area =
+    c.length > 1 ? `${path(c)}L${x(last).toFixed(1)},${y(0)}L${x(0).toFixed(1)},${y(0)}Z` : '';
+  return (
+    <div ref={ref} className="chart-wrap">
+      <svg
+        className="chart pace"
+        width={W}
+        height={height}
+        viewBox={`0 0 ${W} ${height}`}
+        role="img"
+        aria-label={label}
+      >
+        <line className="grid" x1={0} x2={W} y1={y(0)} y2={y(0)} />
+        {p.length > 1 && <path className="pace-prev" d={path(p)} />}
+        {area && <path className="pace-area" d={area} />}
+        {c.length > 1 && <path className="pace-now" d={path(c)} />}
+        {last >= 0 && <circle className="pace-dot" cx={x(last)} cy={y(c[last]!)} r={4} />}
+        <text className="axis" x={padX} y={height - 3}>
+          1
+        </text>
+        <text className="axis" x={W / 2} y={height - 3} textAnchor="middle">
+          15
+        </text>
+        <text className="axis" x={W - padX} y={height - 3} textAnchor="end">
+          {days}
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+/** "↑ ₹4,350 more than Sept" in a quiet pill; up = warn tint, down = calm green. */
+export function Delta({ value, suffix }: { value: Paise; suffix: string }) {
+  if (value === 0) return <span className="delta delta-flat">Same as {suffix}</span>;
+  const up = value > 0;
+  return (
+    <span className={`delta ${up ? 'delta-up' : 'delta-down'}`}>
+      <Icon name={up ? 'up' : 'down'} size={13} />
+      {formatINR(Math.abs(value))} {up ? 'more' : 'less'} than {suffix}
+    </span>
   );
 }
 
@@ -316,7 +449,7 @@ export function MoneyInput({
         autoFocus={autoFocus}
         placeholder={placeholder}
         value={value}
-        onChange={(e) => onChange(e.target.value.replace(/[^\d.,-]/g, ''))}
+        onChange={(e) => onChange(cleanAmountInput(e.target.value, value))}
         style={{
           border: 0,
           outline: 0,
@@ -376,23 +509,26 @@ export function ConfirmButton({
   confirmLabel = 'Tap again to confirm',
   onConfirm,
   className = 'btn',
+  canArm,
 }: {
   label: string;
   confirmLabel?: string;
   onConfirm: () => void;
   className?: string;
+  /** Checked on the first tap; return false to skip arming (e.g. the input is invalid). */
+  canArm?: () => boolean;
 }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
     if (!armed) return;
-    const t = setTimeout(() => setArmed(false), 4000);
+    const t = setTimeout(() => setArmed(false), 6000);
     return () => clearTimeout(t);
   }, [armed]);
   return (
     <button
       className={className}
       style={armed ? { color: 'var(--neg)', borderColor: 'var(--neg)' } : undefined}
-      onClick={() => (armed ? onConfirm() : setArmed(true))}
+      onClick={() => (armed ? onConfirm() : (!canArm || canArm()) && setArmed(true))}
     >
       {armed ? confirmLabel : label}
     </button>

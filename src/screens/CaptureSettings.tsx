@@ -183,10 +183,10 @@ export function CaptureSettings() {
             </div>
             <button
               className="chip"
-              aria-pressed={meta.autoAdd === true}
-              onClick={() => setMeta('autoAdd', meta.autoAdd !== true)}
+              aria-pressed={meta.autoAdd !== false}
+              onClick={() => setMeta('autoAdd', meta.autoAdd === false)}
             >
-              {meta.autoAdd === true ? 'On' : 'Off'}
+              {meta.autoAdd !== false ? 'On' : 'Off'}
             </button>
           </div>
         </div>

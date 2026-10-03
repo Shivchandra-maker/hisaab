@@ -17,6 +17,7 @@ import { StyleGuide } from './screens/StyleGuide';
 import { Transactions } from './screens/Transactions';
 import { TxnSheet } from './screens/TxnSheet';
 import { Welcome } from './screens/Welcome';
+import { WhereMoney } from './screens/WhereMoney';
 import { handleBackButton, isAndroidApp, startCapture } from './native/capture';
 import { QuickSetup } from './screens/QuickSetup';
 import { useStore } from './store';
@@ -25,7 +26,7 @@ import { UICtx, type TxnDraft, type UI } from './ui';
 /** `tab` = label in the phone tab bar; items without one are reached from More on phones. */
 const NAV: { id: string; label: string; tab?: string; icon: string }[] = [
   { id: 'home', label: 'Home', tab: 'Home', icon: 'home' },
-  { id: 'transactions', label: 'Transactions', tab: 'Activity', icon: 'list' },
+  { id: 'transactions', label: 'Activity', tab: 'Activity', icon: 'list' },
   { id: 'inbox', label: 'Inbox', tab: 'Inbox', icon: 'inbox' },
   { id: 'accounts', label: 'Accounts', tab: 'Accounts', icon: 'wallet' },
   { id: 'people', label: 'Lent & borrowed', icon: 'transfer' },
@@ -39,7 +40,9 @@ const sectionOf = (r: string) =>
     ? 'accounts'
     : ['categories', 'style', 'rules'].includes(r)
       ? 'settings'
-      : r;
+      : r === 'sort'
+        ? 'home'
+        : r;
 
 const readRoute = () => window.location.hash.replace('#', '') || 'home';
 
@@ -178,6 +181,7 @@ export function App() {
   else if (route === 'inbox') screen = <Inbox />;
   else if (route === 'rules') screen = <Rules />;
   else if (route === 'style') screen = <StyleGuide />;
+  else if (route === 'sort') screen = <WhereMoney />;
   else screen = <Home month={month} setMonth={setMonth} />;
 
   return (
@@ -221,15 +225,12 @@ export function App() {
           )}
           {isSample && (
             <div className="page" style={{ marginBottom: 'var(--sp-4)' }}>
-              <div className="banner row" style={{ flexWrap: 'wrap' }}>
-                <span>You’re exploring sample data. Nothing here is real.</span>
-                <span className="spacer" />
-                <button
-                  className="btn btn-ghost"
-                  style={{ color: 'inherit', padding: '2px 4px' }}
-                  onClick={() => go('settings')}
-                >
-                  Start with my own data
+              <div className="banner sample-banner">
+                <span>
+                  <b>Sample data</b> — nothing here is real.
+                </span>
+                <button className="banner-link" onClick={() => go('settings')}>
+                  Use my own
                 </button>
               </div>
             </div>
@@ -259,13 +260,15 @@ export function App() {
             </button>
           ))}
         </nav>
-        <button
-          className="fab"
-          onClick={() => setEditor({ type: 'txn' })}
-          aria-label="Add transaction"
-        >
-          <Icon name="plus" size={26} />
-        </button>
+        {route !== 'sort' && (
+          <button
+            className="fab"
+            onClick={() => setEditor({ type: 'txn' })}
+            aria-label="Add transaction"
+          >
+            <Icon name="plus" size={26} />
+          </button>
+        )}
       </div>
       {editors}
     </UICtx.Provider>
