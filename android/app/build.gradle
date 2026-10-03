@@ -1,5 +1,16 @@
 apply plugin: 'com.android.application'
 
+// Values from CI (GitHub Actions). Worked out here, not inline: Groovy reads `foo (a ?: b).bar()`
+// as `foo(a ?: b).bar()`, which silently passes the wrong thing.
+def envOr = { String name, String fallback -> def v = System.getenv(name); (v != null && v.trim()) ? v.trim() : fallback }
+def hisaabVersionCode = Integer.parseInt(envOr("HISAAB_VERSION_CODE", "1"))
+def hisaabVersionName = envOr("HISAAB_VERSION_NAME", "0.3.0")
+def hisaabKeystore = envOr("HISAAB_KEYSTORE", "")
+def hisaabStorePassword = envOr("HISAAB_KEYSTORE_PASSWORD", "")
+def hisaabKeyAlias = envOr("HISAAB_KEY_ALIAS", "hisaab")
+def hisaabKeyPassword = envOr("HISAAB_KEY_PASSWORD", hisaabStorePassword)
+def hisaabSigned = !hisaabKeystore.isEmpty()
+
 android {
     namespace "app.hisaab"
     compileSdk rootProject.ext.compileSdkVersion
@@ -8,8 +19,8 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         // CI passes the build number so every APK installs over the previous one.
-        versionCode (System.getenv("HISAAB_VERSION_CODE") ?: "1").toInteger()
-        versionName System.getenv("HISAAB_VERSION_NAME") ?: "0.3.0"
+        versionCode hisaabVersionCode
+        versionName hisaabVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -21,18 +32,17 @@ android {
     // over the old app and keep your data. Without the key, the debug key is used.
     signingConfigs {
         release {
-            def ks = System.getenv("HISAAB_KEYSTORE")
-            if (ks) {
-                storeFile file(ks)
-                storePassword System.getenv("HISAAB_KEYSTORE_PASSWORD")
-                keyAlias System.getenv("HISAAB_KEY_ALIAS") ?: "hisaab"
-                keyPassword System.getenv("HISAAB_KEY_PASSWORD") ?: System.getenv("HISAAB_KEYSTORE_PASSWORD")
+            if (hisaabSigned) {
+                storeFile file(hisaabKeystore)
+                storePassword hisaabStorePassword
+                keyAlias hisaabKeyAlias
+                keyPassword hisaabKeyPassword
             }
         }
     }
     buildTypes {
         release {
-            signingConfig System.getenv("HISAAB_KEYSTORE") ? signingConfigs.release : signingConfigs.debug
+            signingConfig(hisaabSigned ? signingConfigs.release : signingConfigs.debug)
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
