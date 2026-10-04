@@ -1,0 +1,61 @@
+package app.hisaab;
+
+import android.Manifest;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.os.Build;
+
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+import androidx.core.content.ContextCompat;
+
+/** "New payment · ₹250 — tap to review" after a bank SMS is captured. */
+public final class CaptureNotifier {
+    private static final String CHANNEL = "captures";
+    private static final int ID = 7001;
+
+    private CaptureNotifier() {}
+
+    public static void show(Context ctx, String body) {
+        if (!CaptureStore.notifyOnCapture(ctx)) return;
+        if (Build.VERSION.SDK_INT >= 33
+                && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationManager nm = ctx.getSystemService(NotificationManager.class);
+            if (nm != null && nm.getNotificationChannel(CHANNEL) == null) {
+                NotificationChannel ch = new NotificationChannel(
+                        CHANNEL, "New payment messages", NotificationManager.IMPORTANCE_DEFAULT);
+                ch.setDescription("A bank message was captured and is waiting in your Inbox");
+                nm.createNotificationChannel(ch);
+            }
+        }
+        Intent open = new Intent(ctx, MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        open.putExtra("route", "inbox");
+        PendingIntent pi = PendingIntent.getActivity(
+                ctx, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        String amount = CaptureFilter.amountLabel(body);
+        int waiting = CaptureStore.all(ctx).length();
+        NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL)
+                .setSmallIcon(R.drawable.ic_stat_hisaab)
+                .setContentTitle(amount.isEmpty() ? "New payment message" : "New payment · " + amount)
+                .setContentText(waiting > 1 ? waiting + " messages waiting — tap to review" : "Tap to review in Hisaab")
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT);
+        try {
+            NotificationManagerCompat.from(ctx).notify(ID, b.build());
+        } catch (SecurityException ignored) {
+            // Permission revoked between the check and the call.
+        }
+    }
+}
