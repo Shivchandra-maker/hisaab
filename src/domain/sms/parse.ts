@@ -49,6 +49,10 @@ export interface ParsedSms {
   isRefund?: boolean;
   isCashback?: boolean;
   isAtm?: boolean;
+  /** Your other account named in the text ("To Self Kotak Bank XX3344", "to A/c XX3344"). */
+  otherLast4?: string;
+  /** Says outright it went to your own account ("To Self", "own account"). */
+  isSelfTransfer?: boolean;
   /** Debit from a bank account that pays a credit-card bill. */
   isCardBillPayment?: boolean;
   /** Money moved into UPI Lite / a wallet. */
@@ -70,7 +74,7 @@ export interface ParsedSms {
 }
 
 /** Bump when parsing changes, so messages already in the Inbox are read again with the new rules. */
-export const PARSER_VERSION = 3;
+export const PARSER_VERSION = 5;
 
 /* ───────────────────────── helpers ───────────────────────── */
 
@@ -196,7 +200,17 @@ function findBalance(text: string): { balance?: Paise; isLimit?: boolean } {
       'i',
     ),
   );
-  if (!m) return {};
+  if (!m) {
+    // "Avl Bal in your A/c XX4521 is Rs.23,450.50"
+    const far = text.match(
+      new RegExp(
+        String.raw`\b(?:avl\.?|available|avail\.?)\s*(bal(?:ance)?|lmt|limit)\b.{0,45}?\bis\s*(?:${AMOUNT}|([\d,]+(?:\.\d{1,2})?))`,
+        'i',
+      ),
+    );
+    const raw = far?.[2] ?? far?.[3];
+    return raw ? { balance: toPaise(raw), isLimit: /lmt|limit/i.test(far![1]!) } : {};
+  }
   const raw = m[3] ?? m[4];
   if (!raw) return {};
   return { balance: toPaise(raw), isLimit: /lmt|limit/i.test(m[2]!) };
@@ -304,6 +318,50 @@ function findCounterparty(
   return { vpa };
 }
 
+/* ───────────────────────── scams ───────────────────────── */
+
+/**
+ * Banks' own sites. Since 2025 RBI moves Indian banks to `.bank.in`, so any of those is fine too.
+ * A link elsewhere plus pressure words ("suspended", "KYC", "click") is the classic scam SMS.
+ */
+const TRUSTED_SITES =
+  /(?:^|\.)(?:bank\.in|kotak\.com|hdfcbank\.com|hdfc\.com|icicibank\.com|sbi\.co\.in|onlinesbi\.sbi|sbi|sbicard\.com|axisbank\.com|axis\.bank|bobcard\.io|bankofbaroda\.in|idfcfirstbank\.com|yesbank\.in|indusind\.com|federalbank\.co\.in|pnbindia\.in|canarabank\.com|unionbankofindia\.co\.in|rblbank\.com|aubank\.in|sc\.com|hsbc\.co\.in|citi\.com|paytm\.com|paytmbank\.com|phonepe\.com|phone\.pe|amazon\.in|getonecard\.app|cred\.club|npci\.org\.in|sihub\.in|incometax\.gov\.in)$/i;
+const PRESSURE =
+  /\b(suspended|suspend|(?:will be|has been|is) (?:blocked|deactivated)|kyc|pan (?:card )?(?:update|link)|verify|reward points?|claim|redeem|expir(?:e|es|ed|ing)|lottery|you have won|update (?:now|your|immediately)|click|tap here)\b/i;
+
+function looksLikeScam(flat: string): boolean {
+  if (!PRESSURE.test(flat)) return false;
+  const links = [
+    ...flat.matchAll(/\b(?:https?:\/\/|www\.)?((?:[a-z0-9-]+\.)+(?:[a-z]{2,6}))(?:\/\S*)?/gi),
+  ]
+    .filter(
+      (m) =>
+        /https?:\/\/|www\.|\//i.test(m[0]) ||
+        /\.(?:ly|co|top|xyz|in|com|info|online|site|link)$/i.test(m[1]!),
+    )
+    .map((m) => m[1]!.toLowerCase().replace(/^www\./, ''))
+    // "A/c", amounts like "Rs.4999", "a.b" initials are not sites.
+    .filter((d) => /[a-z]{2,}\.[a-z]{2,}/.test(d) && !/^(rs|inr|no|a\/c|ac)\./.test(d));
+  return links.some((d) => !TRUSTED_SITES.test(d));
+}
+
+/** Masked account number in the part of the text that names where money went or came from. */
+function otherAccount(
+  flat: string,
+  direction: 'debit' | 'credit',
+  own?: string,
+): string | undefined {
+  const word = direction === 'debit' ? /\bto\b/i : /\bfrom\b/i;
+  const at = flat.search(word);
+  if (at < 0) return undefined;
+  const part = flat.slice(at, at + 48);
+  const m =
+    part.match(/(?:a\/?c|acct|account|ac)\s*(?:no\.?)?\s*[x*]*\s*(\d{3,6})\b/i) ??
+    part.match(/\b[x*]{1,}(\d{3,6})\b/i);
+  const last4 = m?.[1]?.slice(-4);
+  return last4 && last4 !== own ? last4 : undefined;
+}
+
 /* ───────────────────────── main ───────────────────────── */
 
 /**
@@ -325,6 +383,13 @@ export function parseSms(input: string): ParsedSms {
 
   // 1. Never transactions.
   if (
+    /\b(payment request|collect request|money request|has requested|is requesting|requested (?:money|payment|rs|inr|₹))\b/i.test(
+      flat,
+    ) &&
+    !/\b(debited|credited|spent|deducted|sent|received in|paid to)\b/i.test(flat)
+  )
+    return { ...base(), reason: 'Payment request — nothing paid yet', bank };
+  if (
     /\b(otp|one[- ]time password|verification code|passcode)\b/i.test(flat) &&
     !/\b(debited|credited|spent)\b/i.test(flat)
   )
@@ -338,6 +403,7 @@ export function parseSms(input: string): ParsedSms {
     !/\b(reversed|refund)\b/i.test(flat)
   )
     return { ...base(), reason: 'Declined or failed — no money moved', bank };
+  if (looksLikeScam(flat)) return { ...base(), reason: 'Looks like a scam message', bank };
 
   // 2a. Card statement generated: tells us the statement day, due date and amount due.
   if (
@@ -357,7 +423,9 @@ export function parseSms(input: string): ParsedSms {
     const minDue = num(
       /min(?:imum)?\.?\s*(?:amt\.?|amount)?\s*due\s*(?:is|of|:|-)?\s*(?:rs\.?|inr|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i,
     );
-    const dueAt = flat.match(/(?:payment\s*)?due\s*(?:date|by|on)\b\s*(?:is|:|-)?\s*(.{0,24})/i);
+    const dueAt = flat.match(
+      /(?:(?:payment\s*)?due\s*(?:date|by|on)|payable\s*(?:by|on|before))\b\s*(?:is|:|-)?\s*(.{0,24})/i,
+    );
     const { last4 } = findLast4(flat);
     return {
       ...base(),
@@ -426,6 +494,58 @@ export function parseSms(input: string): ParsedSms {
     };
   }
 
+  // 3a. Bill and EMI reminders: money that's due, not money that moved.
+  const paidWords =
+    /\b(debited|credited|spent|received|thank you|has been paid|was paid|paid successfully|successfully paid|deducted|withdrawn|sent|transferred|purchase)\b/i;
+  if (
+    /\b(is due|are due|due on|due by|due date|payable by|payment due|min(?:imum)?\.?\s*(?:amt\.?|amount)?\s*due|total\s*(?:amt\.?|amount)?\s*due|overdue)\b/i.test(
+      flat,
+    ) &&
+    !paidWords.test(flat)
+  ) {
+    const { last4, instrument } = findLast4(flat);
+    return {
+      ...base(),
+      reason: 'Payment reminder — not paid yet',
+      instrument: /\bcard\b/i.test(flat) && instrument !== 'account' ? 'credit_card' : instrument,
+      last4,
+      bank,
+    };
+  }
+  // "Will be debited" without a mandate: a heads-up, the money hasn't moved.
+  const future =
+    /\b(?:will|shall|to|would) be\s+(?:auto[- ]?)?(?:debited|deducted|charged|credited)\b/gi;
+  if (
+    future.test(flat) &&
+    !/\b(debited|credited|spent|deducted|sent|paid)\b/i.test(flat.replace(future, ' '))
+  )
+    return { ...base(), reason: 'Heads-up — money not taken yet', bank, amount: findAmount(flat) };
+
+  // 3b. Balance-only messages (balance enquiry replies, daily balance alerts): no payment, but
+  // the balance keeps the account accurate.
+  if (
+    /\b(bal(?:ance)?|avl\.?\s*lmt|available\s*limit)\b/i.test(flat) &&
+    !/\b(debited|credited|spent|sent|paid|received|withdrawn|deposited|transferred|purchase|added|loaded|top[- ]?up|refund|reversed|cashback)\b/i.test(
+      flat,
+    ) &&
+    !/\b(offer|apply|eligible|pre-?approved|loan of|upgrade)\b/i.test(flat)
+  ) {
+    const b = findBalance(flat);
+    if (b.balance !== undefined) {
+      const { last4, instrument } = findLast4(flat);
+      return {
+        ...base(),
+        reason: 'Balance update',
+        instrument,
+        last4,
+        bank,
+        balance: b.balance,
+        balanceIsLimit: b.isLimit,
+        date: findDate(flat),
+      };
+    }
+  }
+
   // 4. Promotions and info messages with no money movement.
   const moneyVerb =
     /\b(debited|credited|spent|sent|paid|received|withdrawn|deposited|transferred|purchase|txn|transaction|refund|reversed|reversal|cashback|payment|added to|loaded|top[- ]?up)\b/i;
@@ -472,7 +592,7 @@ export function parseSms(input: string): ParsedSms {
 
   // 6. Direction: whichever money word appears first decides.
   const debitIdx = lower.search(
-    /\b(debited|spent|sent|paid|withdrawn|purchase|deducted|charged|used at|txn of|transaction of|dr\b|debit\b)/,
+    /\b(debited|spent|sent|paid|withdrawn|purchase|deducted|charged|used at|txn of|transaction of|transferred from|trf from|dr\b|debit\b)/,
   );
   const creditIdx = lower.search(
     /\b(credited|received|deposited|refund|reversed|reversal|cashback|cr\b|added to)/,
@@ -518,6 +638,10 @@ export function parseSms(input: string): ParsedSms {
     mode = 'card';
   else if (/\b(neft|imps|rtgs|net ?banking|netbanking)\b/i.test(flat)) mode = 'netbanking';
 
+  const isSelfTransfer =
+    /\b(to self|self transfer|own account|to your own|between your accounts)\b/i.test(flat);
+  const otherLast4 = last4 || isSelfTransfer ? otherAccount(flat, direction, last4) : undefined;
+
   let confidence = 0.5;
   if (last4 || instrument === 'upi_lite' || paidByWallet) confidence += 0.25;
   if (date) confidence += 0.1;
@@ -544,6 +668,8 @@ export function parseSms(input: string): ParsedSms {
     walletName,
     isCardBillPayment,
     isRecurring,
+    otherLast4,
+    isSelfTransfer: isSelfTransfer || undefined,
     confidence: Math.min(1, confidence),
   };
 }

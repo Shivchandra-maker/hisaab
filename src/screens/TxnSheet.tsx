@@ -16,6 +16,7 @@ import type { Account, PaymentMode, Split, Transaction } from '../domain/types';
 import { deleteTransaction, restoreTransaction, saveTransaction } from '../db/repo';
 import { guessCategory } from '../domain/sms/categorize';
 import { useStore } from '../store';
+import { resolvePersonPayment, splitWithFriends } from '../db/loans';
 import { useUI, type TxnDraft } from '../ui';
 
 type Tab = 'expense' | 'income' | 'transfer';
@@ -578,6 +579,9 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
       </Field>
 
       {cardNote && <div className="note note-cycle">{cardNote}</div>}
+      {editing && initial?.kind === 'expense' && initial.id && (
+        <PaidForSomeone txnId={initial.id} total={initial.amount ?? 0} onDone={onClose} />
+      )}
       <ErrorNote message={error} />
       <div className="row">
         {editing && (
@@ -594,6 +598,83 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
         </button>
       </div>
     </Sheet>
+  );
+}
+
+/**
+ * Bought something for a friend (e.g. on your card)? Their part becomes money lent: your card
+ * bill stays the same, your spending drops, and they show up in Lent & borrowed.
+ */
+function PaidForSomeone({
+  txnId,
+  total,
+  onDone,
+}: {
+  txnId: string;
+  total: number;
+  onDone: () => void;
+}) {
+  const { toast } = useUI();
+  const [open, setOpen] = useState(false);
+  const [who, setWho] = useState('');
+  const [amount, setAmount] = useState('');
+  const [error, setError] = useState('');
+  if (!open)
+    return (
+      <button
+        className="link-btn"
+        style={{ alignSelf: 'flex-start' }}
+        onClick={() => setOpen(true)}
+      >
+        Paid for someone?
+      </button>
+    );
+  const save = async () => {
+    try {
+      setError('');
+      const part = amount ? toPaise(amount) : total;
+      if (part <= 0 || part > total) throw new Error('Enter up to the full amount.');
+      if (part === total) await resolvePersonPayment(txnId, who, 'lent');
+      else await splitWithFriends(txnId, [{ person: who, amount: part }]);
+      toast(`${formatINR(part)} lent to ${who.trim()} — see Lent & borrowed`);
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save.');
+    }
+  };
+  return (
+    <div className="panel stack" style={{ gap: 'var(--sp-2)', padding: 'var(--sp-3)' }}>
+      <b style={{ fontSize: 'var(--fs-sm)' }}>Paid for someone</b>
+      <div className="grid-2" style={{ gap: 'var(--sp-2)' }}>
+        <Field label="Who" htmlFor="pfs-who">
+          <input
+            id="pfs-who"
+            className="input"
+            value={who}
+            onChange={(e) => setWho(e.target.value)}
+          />
+        </Field>
+        <Field label="Their part" htmlFor="pfs-amt">
+          <input
+            id="pfs-amt"
+            className="input num"
+            inputMode="decimal"
+            placeholder={`All ${formatINR(total)}`}
+            value={amount}
+            onChange={(e) => setAmount(cleanAmountInput(e.target.value, amount))}
+          />
+        </Field>
+      </div>
+      <ErrorNote message={error} />
+      <div className="row" style={{ gap: 'var(--sp-2)' }}>
+        <button className="btn btn-primary" disabled={!who.trim()} onClick={save}>
+          Mark as lent
+        </button>
+        <button className="btn" onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -4,8 +4,15 @@ import { discoverAccounts, type FoundAccount } from '../domain/sms/discover';
 import { parseSms, splitMessages } from '../domain/sms/parse';
 import type { Account, ID, ISODate, Paise } from '../domain/types';
 import { stamp } from './db';
-import { addAllReady, ingestCaptured, NOTIFICATION_APPS, type CapturedMessage } from './inbox';
+import {
+  addAllReady,
+  CAPTURE_FILTER_VERSION,
+  ingestCaptured,
+  NOTIFICATION_APPS,
+  type CapturedMessage,
+} from './inbox';
 import { db, getMeta, learnRule, saveAccount, setMeta } from './repo';
+import { refreshCheckpoints } from './checkpoints';
 
 /**
  * First launch from SMS: read the messages, propose accounts, create the ones you keep, then
@@ -17,7 +24,7 @@ export function pastedToCaptured(text: string, receivedAt = todayIST()): Capture
   const base = new Date(`${receivedAt}T12:00:00+05:30`).getTime();
   return splitMessages(text).map((body, i) => ({
     id: `paste-${i}`,
-    source: 'sms',
+    source: 'paste',
     body,
     ts: base + i,
   }));
@@ -106,12 +113,17 @@ export async function finishSetup(
     const a = await saveAccount(draft);
     ids.set(f.key, a.id);
   }
+  // Cash starts with the oldest message, so ATM withdrawals in the scanned months count.
+  const earliest = kept.reduce<ISODate>(
+    (d, c) => (c.found.firstSeen < d ? c.found.firstSeen : d),
+    today,
+  );
   if (opts.cash && !(await db.accounts.toArray()).some((a) => a.kind === 'cash' && !a.deletedAt))
     await saveAccount({
       name: 'Cash',
       kind: 'cash',
       openingBalance: 0,
-      openingDate: today,
+      openingDate: earliest,
       archived: false,
       sortOrder: order++,
     });
@@ -139,16 +151,18 @@ export async function finishSetup(
   await setAsideNotMine();
   const added = await addAllReady((d, t) => opts.onProgress?.('Adding payments', d, t));
 
-  // Opening balances from the latest balance in the messages.
+  // Cards: start from the last statement's amount due; then every balance the bank stated in a
+  // message (bank/wallet balances, card available limits) re-anchors the account.
   for (const c of kept) {
     const id = ids.get(c.found.key)!;
-    if (c.found.balance) await calibrate(id, c.found.balance.amount, c.found.balance.date, false);
-    else if (c.found.statementDue)
+    if (!c.found.balance && c.found.statementDue)
       await calibrate(id, c.found.statementDue.amount, c.found.statementDue.date, true);
   }
+  await refreshCheckpoints();
 
   await setMeta('onboarded', true);
   await setMeta('quickSetupDone', true);
+  await setMeta('captureFilterVersion', CAPTURE_FILTER_VERSION);
   const needYou = await db.inbox.where('status').equals('new').count();
   return { accounts: kept.length + (opts.cash ? 1 : 0), added, needYou };
 }

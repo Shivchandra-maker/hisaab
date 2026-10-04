@@ -1,6 +1,11 @@
+import { Capacitor } from '@capacitor/core';
+import { reviewLoanQuestions } from './db/loans';
+import { refreshCheckpoints } from './db/checkpoints';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { reparseInboxIfNeeded } from './db/inbox';
+import { inboxNeeds, type InboxNeeds } from './db/needs';
+import { requestPersistentStorage } from './db/persist';
 import { db, ensureDefaults } from './db/repo';
 import { todayIST } from './domain/dates';
 import type {
@@ -33,7 +38,9 @@ interface Store {
   meta: Record<string, unknown>;
   /** Captured messages, newest first. */
   inbox: InboxItem[];
-  /** Things in the Inbox that need you: unreadable/unknown-account messages, unsure duplicates, "Spent or lent?". */
+  /** What in the Inbox needs you, grouped as the Inbox shows it (D-01: one source for every count). */
+  needs: InboxNeeds;
+  /** = needs.count. Badge, Home banner and Inbox heading all show this number. */
   inboxNew: number;
   rules: MerchantRule[];
   isSample: boolean;
@@ -42,13 +49,7 @@ interface Store {
 
 const Ctx = createContext<Store | null>(null);
 
-/** Duplicates we're not sure about; certain ones (same bank reference…) are handled silently. */
-export const UNSURE_DUPLICATES = [
-  'Same payment from a bank SMS and an app notification',
-  'Same amount, account and date',
-];
-export const needsDupCheck = (i: InboxItem) =>
-  i.status === 'duplicate' && UNSURE_DUPLICATES.includes(i.note ?? '');
+export { needsDupCheck, UNSURE_DUPLICATES } from './db/needs';
 
 const byOrder = <T extends { sortOrder: number; name: string }>(a: T, b: T) =>
   a.sortOrder - b.sortOrder || a.name.localeCompare(b.name);
@@ -62,9 +63,14 @@ export function StoreProvider({ children, loading }: { children: ReactNode; load
   }, []);
   const [dbError, setDbError] = useState('');
   useEffect(() => {
+    // Keep the data safe from the system clearing storage when space runs low.
+    void requestPersistentStorage();
     db.open()
       .then(() => ensureDefaults())
       .then(() => reparseInboxIfNeeded())
+      // Phone: re-checked after contacts load (native/capture.ts). Browser: no contacts → no asks.
+      .then(() => (Capacitor.isNativePlatform() ? undefined : reviewLoanQuestions()))
+      .then(() => refreshCheckpoints())
       .catch((e: unknown) => setDbError(e instanceof Error ? e.message : String(e)));
   }, []);
 
@@ -92,22 +98,34 @@ export function StoreProvider({ children, loading }: { children: ReactNode; load
     const accs = accounts.filter((a) => !a.deletedAt).sort(byOrder);
     const cats = categories.filter((c) => !c.deletedAt).sort(byOrder);
     const meta = Object.fromEntries(metaRows.map((m) => [m.key, m.value]));
+    const liveTxns = transactions.filter((t) => !t.deletedAt);
+    const liveRules = rules
+      .filter((r) => !r.deletedAt)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    // D-01: one "needs you" count for the bell, the Home banner, the sidebar and the Inbox page.
+    const needs = inboxNeeds({
+      inbox,
+      transactions: liveTxns,
+      accounts: accs,
+      rules: liveRules,
+      accountHints: (meta.accountHints as Record<string, string>) ?? {},
+      autoAdd: meta.autoAdd !== false,
+    });
     return {
       today,
       accounts: accs,
       activeAccounts: accs.filter((a) => !a.archived),
       categories: cats,
-      transactions: transactions.filter((t) => !t.deletedAt),
+      transactions: liveTxns,
       subscriptions: subscriptions.filter((s) => !s.deletedAt),
       debts: debts.filter((d) => !d.deletedAt),
       accountById: new Map(accs.map((a) => [a.id, a])),
       categoryById: new Map(cats.map((c) => [c.id, c])),
       meta,
       inbox,
-      inboxNew:
-        inbox.filter((i) => i.status === 'new' || needsDupCheck(i)).length +
-        transactions.filter((t) => t.askLoan && !t.deletedAt).length,
-      rules: rules.filter((r) => !r.deletedAt).sort((a, b) => a.name.localeCompare(b.name)),
+      needs,
+      inboxNew: needs.count,
+      rules: liveRules,
       isSample: meta.sample === true,
       onboarded: meta.onboarded === true,
     };

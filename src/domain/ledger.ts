@@ -49,9 +49,16 @@ export function categoryParts(t: Transaction): { categoryId: ID | undefined; amo
   return [{ categoryId: t.categoryId, amount: t.amount }];
 }
 
+/** Category for SIPs and other investments: money you keep, so never counted as spending. */
+export const INVESTMENTS = 'investments';
+
+/** Part of an expense/refund that is spending (investments excluded). */
+const spentPart = (t: Transaction): Paise =>
+  categoryParts(t).reduce((s, p) => s + (p.categoryId === INVESTMENTS ? 0 : p.amount), 0);
+
 /** Signed effect on spending: expense adds, refund subtracts, everything else is 0. */
 export const spendEffect = (t: Transaction): Paise =>
-  t.kind === 'expense' ? t.amount : t.kind === 'refund' ? -t.amount : 0;
+  t.kind === 'expense' ? spentPart(t) : t.kind === 'refund' ? -spentPart(t) : 0;
 
 export interface PeriodSummary {
   /** Expenses minus refunds. The answer to "how much did I spend?" */
@@ -59,6 +66,8 @@ export interface PeriodSummary {
   expenses: Paise;
   refunds: Paise;
   income: Paise;
+  /** Put into SIPs / investments (not spending). */
+  invested: Paise;
   /** income − spent */
   net: Paise;
   byCategory: Map<ID | 'uncategorised', Paise>;
@@ -73,6 +82,7 @@ export function summarise(txns: Transaction[], start: ISODate, end: ISODate): Pe
     expenses: 0,
     refunds: 0,
     income: 0,
+    invested: 0,
     net: 0,
     byCategory: new Map(),
     byAccount: new Map(),
@@ -87,13 +97,20 @@ export function summarise(txns: Transaction[], start: ISODate, end: ISODate): Pe
       continue;
     }
     const sign = t.kind === 'expense' ? 1 : -1;
-    if (sign > 0) s.expenses += t.amount;
-    else s.refunds += t.amount;
+    let spentHere = 0;
     for (const p of categoryParts(t)) {
+      if (p.categoryId === INVESTMENTS) {
+        s.invested += sign * p.amount;
+        continue;
+      }
+      spentHere += p.amount;
       const key = p.categoryId ?? 'uncategorised';
       s.byCategory.set(key, (s.byCategory.get(key) ?? 0) + sign * p.amount);
     }
-    s.byAccount.set(t.accountId, (s.byAccount.get(t.accountId) ?? 0) + sign * t.amount);
+    if (sign > 0) s.expenses += spentHere;
+    else s.refunds += spentHere;
+    if (spentHere)
+      s.byAccount.set(t.accountId, (s.byAccount.get(t.accountId) ?? 0) + sign * spentHere);
   }
   s.spent = s.expenses - s.refunds;
   s.net = s.income - s.spent;

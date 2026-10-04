@@ -1,7 +1,17 @@
 import { App } from '@capacitor/app';
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
-import { addAllReady, ingestCaptured, type CapturedMessage, type IngestSummary } from '../db/inbox';
-import { getMeta } from '../db/repo';
+import {
+  addAllReady,
+  CAPTURE_FILTER_VERSION,
+  ingestCaptured,
+  reparseInboxIfNeeded,
+  type CapturedMessage,
+  type IngestSummary,
+} from '../db/inbox';
+import { getMeta, setMeta } from '../db/repo';
+import { reviewLoanQuestions } from '../db/loans';
+import { refreshCheckpoints } from '../db/checkpoints';
+import { setContacts, type Contact } from '../domain/people';
 
 /**
  * Web side of automatic capture. In the Android app, native code (android/app/src/main/java/
@@ -17,6 +27,7 @@ export interface CaptureStatus {
   pending: number;
   notify: boolean;
   apps: string[];
+  contacts?: boolean;
 }
 
 interface HisaabCapturePlugin {
@@ -29,6 +40,8 @@ interface HisaabCapturePlugin {
   ack(opts: { ids: string[] }): Promise<void>;
   setOptions(opts: { apps?: string[]; notify?: boolean }): Promise<CaptureStatus>;
   takeRoute(): Promise<{ route: string }>;
+  requestContacts(): Promise<CaptureStatus>;
+  readContacts(): Promise<{ contacts: Contact[] }>;
   addListener(event: 'captured', fn: () => void): Promise<PluginListenerHandle>;
 }
 
@@ -48,12 +61,86 @@ export function syncCaptured(): Promise<IngestSummary | null> {
       const summary = await ingestCaptured(items);
       await Capture.ack({ ids: items.map((i) => i.id) });
       if (await getMeta<boolean>('autoAdd', true)) await addAllReady();
+      await refreshCheckpoints();
       return summary;
     } finally {
       syncing = null;
     }
   })();
   return syncing;
+}
+
+/**
+ * Read contacts (if allowed) so "Spent or lent?" is only asked about people you know, then
+ * re-check waiting questions. Without contacts we never ask.
+ */
+export async function loadContacts(): Promise<boolean> {
+  if (!isAndroidApp) return false;
+  try {
+    const st = await Capture.status();
+    if (st.contacts) {
+      const { contacts } = await Capture.readContacts();
+      setContacts(contacts);
+    }
+    await reviewLoanQuestions();
+    return !!st.contacts;
+  } catch {
+    return false;
+  }
+}
+
+export async function requestContacts(): Promise<boolean> {
+  if (!isAndroidApp) return false;
+  const st = await Capture.requestContacts();
+  if (st.contacts) await loadContacts();
+  return !!st.contacts;
+}
+
+/**
+ * Pull-to-refresh: Android sometimes stops the app before it hears a new SMS. Re-read the last
+ * few days of bank messages; ones already seen are skipped by their text.
+ */
+export async function catchUp(days = 3): Promise<number> {
+  if (!isAndroidApp) return 0;
+  await syncCaptured().catch(() => null);
+  const st = await Capture.status();
+  if (!st.sms) return 0;
+  const { messages } = await Capture.readInbox({
+    sinceMs: Date.now() - days * 86_400_000,
+    limit: 2000,
+  });
+  const s = await ingestCaptured(messages);
+  const added = (await getMeta<boolean>('autoAdd', true)) ? await addAllReady() : 0;
+  await refreshCheckpoints();
+  return added || s.toReview;
+}
+
+/**
+ * Older versions of the Android filter dropped many real alerts ("Sent Rs…", "Your txn of ₹…",
+ * reversals, SIPs). Once after updating, read the same months as setup again; messages already
+ * filed are skipped by their text, so only the missed ones are added.
+ */
+export async function rescanAfterFilterUpgrade(): Promise<number> {
+  if (!isAndroidApp) return 0;
+  if ((await getMeta<number>('captureFilterVersion', 1)) >= CAPTURE_FILTER_VERSION) return 0;
+  await reparseInboxIfNeeded(); // apply the new parser to what's already filed first
+  if (!(await getMeta<boolean>('quickSetupDone', false))) {
+    await setMeta('captureFilterVersion', CAPTURE_FILTER_VERSION);
+    return 0;
+  }
+  const st = await Capture.status();
+  if (!st.sms) return 0; // try again once SMS is allowed
+  const { messages } = await Capture.readInbox({ sinceMs: Date.now() - 180 * DAY, limit: 20_000 });
+  const sorted = [...messages].sort((a, b) => a.ts - b.ts);
+  let fresh = 0;
+  for (let i = 0; i < sorted.length; i += CHUNK) {
+    const s = await ingestCaptured(sorted.slice(i, i + CHUNK));
+    fresh += s.read - s.alreadySeen;
+  }
+  if (await getMeta<boolean>('autoAdd', true)) await addAllReady();
+  await refreshCheckpoints();
+  await setMeta('captureFilterVersion', CAPTURE_FILTER_VERSION);
+  return fresh;
 }
 
 /** How far back the one-time import reads. */
@@ -96,6 +183,7 @@ export async function importPastMessages(
     onProgress?.(Math.min(i + CHUNK, sorted.length), sorted.length);
   }
   if (await getMeta<boolean>('autoAdd', true)) await addAllReady();
+  await refreshCheckpoints();
   return total;
 }
 
@@ -122,13 +210,14 @@ export function startCapture(
 ): () => void {
   if (!isAndroidApp) return () => {};
   const handles: Promise<PluginListenerHandle>[] = [];
+  void loadContacts();
   const run = async () => {
     const s = await syncCaptured().catch(() => null);
     if (s && (s.toReview || s.duplicates || s.notices)) onNew(s);
     const { route } = await Capture.takeRoute().catch(() => ({ route: '' }));
     if (route) onRoute(route);
   };
-  void run();
+  void run().then(() => rescanAfterFilterUpgrade().catch(() => 0));
   handles.push(Capture.addListener('captured', () => void run()));
   handles.push(App.addListener('resume', () => void run()));
   return () => handles.forEach((h) => void h.then((x) => x.remove()));

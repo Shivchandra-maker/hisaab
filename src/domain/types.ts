@@ -71,6 +71,13 @@ export interface Account extends Syncable {
   openingBalance: Paise;
   openingDate: ISODate;
   card?: CardDetails;
+  /**
+   * Latest balance the bank/wallet stated in a message ("Avl bal", or limit − "Avl lmt" for
+   * cards). The account is re-anchored to it; `drift` is how far Hisaab's own count was off.
+   */
+  check?: { amount: Paise; date: ISODate; ts?: number; drift: Paise };
+  /** Cards: latest "available limit" seen, kept so we can ask for the credit limit once. */
+  lastAvailable?: { amount: Paise; date: ISODate };
   color?: string;
   archived: boolean;
   sortOrder: number;
@@ -156,8 +163,8 @@ export interface Transaction extends Syncable {
   /** Original SMS/email text for auto-captured transactions. */
   rawText?: string;
   /**
-   * Captured payment to/from a person: still waiting for "Spent, lent or paid back?".
-   * Counted as spending/income until answered.
+   * Captured payment to/from a contact: true = waiting for "Spent, lent or paid back?",
+   * false = answered (never ask again). Counted as spending/income until answered.
    */
   askLoan?: boolean;
 }

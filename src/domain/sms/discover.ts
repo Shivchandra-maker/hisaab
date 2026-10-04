@@ -41,6 +41,8 @@ export interface FoundAccount {
   isDebitCard?: boolean;
   /** Why it deserves a second look, shown as "Check". */
   check?: string;
+  /** Weak evidence (no account number): shown unticked, so it's only added if you say so. */
+  unsure?: boolean;
 }
 
 const short = (bank?: string) => (bank ? bank.replace(/\s+bank$/i, '').trim() : undefined);
@@ -135,6 +137,13 @@ export function discoverAccounts(messages: ScannedMessage[]): FoundAccount[] {
     if (card && g.items.every((i) => i.p.instrument === 'unknown')) fold(g, card);
   }
 
+  // A bank named with no number, in messages with no reference and no balance, is how scam SMS
+  // look ("Your SBI account is suspended…"). Real alerts carry at least one of those.
+  for (const g of [...groups.values()]) {
+    if (g.last4 || g.key.startsWith('wallet') || g.key === 'lite') continue;
+    if (!g.items.some((i) => i.p.ref || i.p.balance !== undefined)) groups.delete(g.key);
+  }
+
   const out: FoundAccount[] = [];
   for (const g of groups.values()) {
     const items = [...g.items].sort((a, b) => a.date.localeCompare(b.date) || a.ts - b.ts);
@@ -175,7 +184,10 @@ export function discoverAccounts(messages: ScannedMessage[]): FoundAccount[] {
       } else {
         f.check = 'Bill day not in messages yet — set it later';
       }
-      if (!g.last4) f.check = 'No card number in messages';
+      if (!g.last4) {
+        f.check = 'No card number in messages';
+        f.unsure = true;
+      }
     } else if (g.key === 'lite') {
       f.name = 'UPI Lite';
     } else if (g.kind === 'wallet') {
@@ -186,7 +198,10 @@ export function discoverAccounts(messages: ScannedMessage[]): FoundAccount[] {
       f.isDebitCard = true;
     } else {
       f.name = `${bank ?? 'Bank account'}${tail}`;
-      if (!g.last4) f.check = 'No account number in messages';
+      if (!g.last4) {
+        f.check = 'No account number in messages — tick only if it’s yours';
+        f.unsure = true;
+      }
     }
     if (g.kind !== 'credit_card') {
       const withBal = [...items]

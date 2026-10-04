@@ -343,6 +343,11 @@ export async function refreshDebtSettlement(debtId?: ID) {
 export async function ensureDefaults() {
   // bulkPut, not bulkAdd: two first-run callers (a second tab, React StrictMode) can both see 0.
   if ((await db.categories.count()) === 0) await db.categories.bulkPut(defaultCategories);
+  // Categories added in later versions.
+  for (const id of ['investments']) {
+    const c = defaultCategories.find((x) => x.id === id);
+    if (c && !(await db.categories.get(id))) await db.categories.put({ ...c, sortOrder: 90 });
+  }
   // v1 named the catch-all category "Other"; it's "Miscellaneous" now.
   const other = await db.categories.get('other');
   if (other && other.name === 'Other')

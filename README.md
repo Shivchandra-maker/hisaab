@@ -9,6 +9,8 @@ Card bill payments are transfers, so they are never counted as spending twice.
 
 ## Status
 
+**Testing round 3 fixes** (2026-10-04): the Android filter now keeps every bank alert ("Sent Rs…", "Your txn of ₹…", reversals, SIPs) and the parser sets aside bill reminders, "will be debited" notices, payment requests and scam SMS; moves between your own accounts are transfers, not income; data is protected from low-storage clearing and stays out of Google backups. On a simulated 12-month history every month's spending is now within a few percent of the truth (was 44–68% low).
+
 **Phase 3.5 — SMS-first setup** built: first launch reads your bank messages (or pasted ones in the browser), finds your accounts, cards and wallets with balances and bill days, and adds every payment automatically. You sort shops, not payments ("Where does your money go?"), and the Inbox shows only what needs you: new accounts, possible duplicates, unreadable messages and "Spent or lent?" for payments to people, which turns that same payment into a loan in Lent & borrowed.
 
 **Phase 3 — Android app** built: the Hisaab Android app reads new bank SMS and payment-app notifications (PhonePe, GPay, Paytm…) on your phone and files them in the Inbox. It can import the last 30/90 days of messages and optionally add ready ones automatically. Nothing leaves the phone. GitHub Actions builds the signed APK on every push — see [docs/android-setup.md](docs/android-setup.md).

@@ -43,7 +43,7 @@ export function Rules() {
           {list.map((r) => {
             const c = r.categoryId ? categoryById.get(r.categoryId) : undefined;
             return (
-              <div key={r.id} className="item" style={{ flexWrap: 'wrap' }}>
+              <div key={r.id} className="item rule-row">
                 <CategoryAvatar category={c} small />
                 <div className="item-main">
                   <div className="item-title">{r.name}</div>
@@ -51,13 +51,22 @@ export function Rules() {
                     Used {r.hits} time{r.hits === 1 ? '' : 's'}
                   </div>
                 </div>
+                <button
+                  className="icon-btn"
+                  aria-label={`Forget ${r.name}`}
+                  onClick={async () => {
+                    await deleteRule(r.id);
+                    toast('Rule removed');
+                  }}
+                >
+                  <Icon name="x" size={16} />
+                </button>
                 <label className="sr-only" htmlFor={`rule-${r.id}`}>
                   Category for {r.name}
                 </label>
                 <select
                   id={`rule-${r.id}`}
-                  className="input"
-                  style={{ width: 'auto', maxWidth: 200 }}
+                  className="input rule-cat"
                   value={r.categoryId ?? ''}
                   onChange={async (e) => {
                     await saveRule({ ...r, categoryId: e.target.value || undefined });
@@ -72,16 +81,6 @@ export function Rules() {
                       </option>
                     ))}
                 </select>
-                <button
-                  className="icon-btn"
-                  aria-label={`Forget ${r.name}`}
-                  onClick={async () => {
-                    await deleteRule(r.id);
-                    toast('Rule removed');
-                  }}
-                >
-                  <Icon name="x" size={16} />
-                </button>
               </div>
             );
           })}

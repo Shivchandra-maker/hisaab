@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ConfirmButton, ErrorNote, Panel, Segmented } from '../design/components';
 import { Icon } from '../design/Icon';
 import { exportBackup, importBackup, resetAll, setMeta } from '../db/repo';
+import { requestPersistentStorage, storageIsPersistent } from '../db/persist';
 import { useStore } from '../store';
 import { CaptureSettings } from './CaptureSettings';
 import { useUI } from '../ui';
@@ -21,6 +22,10 @@ export function Settings() {
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const theme = (meta.theme as Theme) ?? 'system';
+  const [kept, setKept] = useState<boolean | undefined>();
+  useEffect(() => {
+    void storageIsPersistent().then(setKept);
+  }, []);
 
   const download = async () => {
     const json = JSON.stringify(await exportBackup(), null, 1);
@@ -52,8 +57,8 @@ export function Settings() {
   // The last flag marks screens that live in the sidebar on desktop: shown here only on phones,
   // where the tab bar has no room for them.
   const links: [string, string, string, string, boolean?][] = [
-    ['insights', 'Insights', 'Trends, categories, how you paid', 'chart', true],
     ['people', 'Lent & borrowed', 'Money friends owe you, and you owe them', 'transfer', true],
+    ['inbox', 'Inbox', 'Bank messages that need you', 'inbox', true],
     ['rules', 'Merchant rules', `${rules.length} learned from your choices`, 'sparkle'],
     [
       'categories',
@@ -61,13 +66,27 @@ export function Settings() {
       `${categories.filter((c) => !c.archived).length} categories`,
       'list',
     ],
-    ['style', 'Style guide', 'Colours, type and components', 'palette'],
+    // Developer page: only in dev builds (D-09).
+    ...(import.meta.env.DEV
+      ? [
+          ['style', 'Style guide', 'Colours, type and components', 'palette'] as [
+            string,
+            string,
+            string,
+            string,
+          ],
+        ]
+      : []),
   ];
 
   return (
     <div className="page">
       <div className="page-head">
-        <h1>Settings</h1>
+        {/* The phone tab is "More"; the desktop sidebar says "Settings" (D-09). */}
+        <h1>
+          <span className="phone-only-inline">More</span>
+          <span className="desktop-only-inline">Settings</span>
+        </h1>
       </div>
 
       <section className="panel">
@@ -119,6 +138,30 @@ export function Settings() {
             {transactions.length} transactions). Download a backup now and then — clearing browser
             data deletes it. Sync across devices comes in a later phase.
           </p>
+          {kept !== undefined && (
+            <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+              <span className={`pill ${kept ? 'pill-ok' : 'pill-warn'}`}>
+                {kept ? 'Storage protected' : 'Storage not protected'}
+              </span>
+              <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
+                {kept
+                  ? 'The system won’t clear Hisaab’s data when space runs low.'
+                  : 'If the phone runs low on space, the system may clear Hisaab’s data.'}
+              </span>
+              {!kept && (
+                <button
+                  className="btn btn-sm"
+                  onClick={async () => {
+                    const ok = await requestPersistentStorage();
+                    setKept(ok);
+                    toast(ok ? 'Storage protected' : 'Not allowed here — keep a backup');
+                  }}
+                >
+                  Protect
+                </button>
+              )}
+            </div>
+          )}
           <div className="row" style={{ flexWrap: 'wrap' }}>
             <button className="btn btn-primary" onClick={download}>
               Download backup

@@ -40,6 +40,13 @@ export interface Suggestion {
   ready: boolean;
   /** Paid to / received from a person (not a shop): may be a loan, so we ask once. */
   person?: string;
+  /**
+   * `duplicateOf` is the other side of a move between your own accounts (one bank's debit, the
+   * other's credit): that transaction becomes this transfer instead of spending or income.
+   */
+  pairTransfer?: { accountId: ID; toAccountId: ID };
+  /** The message is dated after it arrived: never added on its own. */
+  datedAhead?: boolean;
 }
 
 interface Ctx {
@@ -147,6 +154,15 @@ export function personName(p: ParsedSms, known: boolean): string | undefined {
 }
 
 /** Same money already recorded? Matches on reference first, then amount + account + date window. */
+/** The account a message is about (for balance updates and checks), or undefined. */
+export function accountForMessage(
+  p: ParsedSms,
+  accounts: Account[],
+  hints: Record<string, ID> = {},
+): Account | undefined {
+  return findAccount(p, accounts, hints).account;
+}
+
 export function findDuplicate(
   s: Pick<Suggestion, 'amount' | 'date' | 'accountId' | 'toAccountId' | 'externalRef' | 'kind'>,
   transactions: Transaction[],
@@ -190,9 +206,74 @@ export function findDuplicate(
   return undefined;
 }
 
+/** Accounts money moves between (not cards, not cash). */
+const movable = (a?: Account) => !!a && (a.kind === 'bank' || a.kind === 'wallet');
+
+/** Below this, a same-amount debit and credit on two accounts is too likely a coincidence. */
+export const TRANSFER_PAIR_MIN = 100_000;
+
+/**
+ * The other side of a move between your own accounts, already recorded as spending or income:
+ * same amount, a day apart at most, one account's debit and another's credit. Messages that say
+ * "to self" or name your other account match at any amount; otherwise from ₹1,000 up.
+ */
+export function findTransferPair(
+  s: Pick<Suggestion, 'kind' | 'amount' | 'date' | 'accountId' | 'toAccountId'>,
+  p: ParsedSms,
+  accounts: Account[],
+  transactions: Transaction[],
+): { txn: Transaction; accountId: ID; toAccountId: ID } | undefined {
+  const byId = new Map(accounts.map((a) => [a.id, a]));
+  const sure = !!p.isSelfTransfer || !!p.otherLast4;
+  if (!s.accountId || (!sure && s.amount < TRANSFER_PAIR_MIN)) return undefined;
+  const near = (t: Transaction) =>
+    counted(t) &&
+    t.amount === s.amount &&
+    Math.abs(daysBetween(t.date, s.date)) <= 1 &&
+    (t.source === 'sms' || t.source === 'notification');
+  const pick = (list: Transaction[]) =>
+    list.sort(
+      (a, b) => Math.abs(daysBetween(a.date, s.date)) - Math.abs(daysBetween(b.date, s.date)),
+    )[0];
+  if (s.kind === 'income' && movable(byId.get(s.accountId))) {
+    if (p.isRefund || p.isCashback) return undefined;
+    const t = pick(
+      transactions.filter(
+        (t) =>
+          near(t) &&
+          t.kind === 'expense' &&
+          t.accountId !== s.accountId &&
+          movable(byId.get(t.accountId)) &&
+          t.paymentMode !== 'card' &&
+          !t.splits,
+      ),
+    );
+    return t ? { txn: t, accountId: t.accountId, toAccountId: s.accountId } : undefined;
+  }
+  const from = s.accountId;
+  const to = s.kind === 'transfer' ? s.toAccountId : undefined;
+  if ((s.kind === 'expense' || s.kind === 'transfer') && movable(byId.get(from))) {
+    if (p.isAtm || p.isCardBillPayment || p.isWalletTopUp || p.mode === 'card') return undefined;
+    const t = pick(
+      transactions.filter(
+        (t) =>
+          near(t) &&
+          t.kind === 'income' &&
+          t.accountId !== from &&
+          (!to || t.accountId === to) &&
+          movable(byId.get(t.accountId)),
+      ),
+    );
+    return t ? { txn: t, accountId: from, toAccountId: t.accountId } : undefined;
+  }
+  return undefined;
+}
+
 export function suggest(p: ParsedSms, ctx: Ctx): Suggestion {
   const { account, how } = findAccount(p, ctx.accounts, ctx.accountHints);
-  const date = p.date ?? ctx.receivedAt;
+  // A message can't describe a payment after the day it arrived (bill reminders, schedules).
+  const datedAhead = !!p.date && p.date > ctx.receivedAt;
+  const date = datedAhead ? ctx.receivedAt : (p.date ?? ctx.receivedAt);
   const live = ctx.accounts.filter((a) => !a.deletedAt && !a.archived);
   const amount = p.amount ?? 0;
 
@@ -219,7 +300,10 @@ export function suggest(p: ParsedSms, ctx: Ctx): Suggestion {
     // The card says it received a payment: a transfer from the card's usual paying account.
     kind = 'transfer';
     toAccountId = account?.id;
-    accountId = account?.card?.paymentAccountId ?? live.find((a) => a.kind === 'bank')?.id;
+    // Best guess until the bank's own debit arrives and corrects it (see below).
+    accountId =
+      account?.card?.paymentAccountId ??
+      [...live].sort((a, b) => a.sortOrder - b.sortOrder).find((a) => a.kind === 'bank')?.id;
     merchant = undefined;
     mode = 'netbanking';
   } else if (p.kind === 'debit' && p.isCardBillPayment) {
@@ -239,6 +323,27 @@ export function suggest(p: ParsedSms, ctx: Ctx): Suggestion {
     } else {
       categoryId = 'other';
       categorySource = 'wording';
+    }
+  } else if (
+    (p.kind === 'debit' || p.kind === 'credit') &&
+    (p.otherLast4 || p.isSelfTransfer) &&
+    movable(account)
+  ) {
+    // Between your own accounts: "To Self Kotak Bank XX3344", "from A/c XX4521".
+    const others = live.filter((a) => movable(a) && a.id !== account!.id);
+    const other = p.otherLast4
+      ? others.find((a) => a.last4 === p.otherLast4)
+      : p.isSelfTransfer && others.filter((a) => a.kind === 'bank').length === 1
+        ? others.find((a) => a.kind === 'bank')
+        : undefined;
+    if (other || p.isSelfTransfer) {
+      kind = 'transfer';
+      merchant = undefined;
+      if (p.kind === 'debit') toAccountId = other?.id;
+      else {
+        accountId = other?.id;
+        toAccountId = account!.id;
+      }
     }
   } else if (p.isWalletTopUp) {
     // Wallet top-up (incl. auto top-up mandates): money moves bank → wallet. Not spending.
@@ -284,8 +389,42 @@ export function suggest(p: ParsedSms, ctx: Ctx): Suggestion {
   }
 
   const draft = { kind, amount, date, accountId, toAccountId, externalRef: p.ref };
-  const dup = findDuplicate(draft, ctx.transactions);
-  const needsTo = kind === 'transfer' && !toAccountId;
+  let dup = findDuplicate(draft, ctx.transactions);
+  // Income on account B after the same move was recorded as a transfer A → B.
+  if (!dup && kind === 'income' && accountId)
+    for (const t of ctx.transactions)
+      if (
+        counted(t) &&
+        t.kind === 'transfer' &&
+        t.toAccountId === accountId &&
+        t.amount === amount &&
+        Math.abs(daysBetween(t.date, date)) <= 3
+      ) {
+        dup = { txn: t, reason: 'Same transfer from the other side' };
+        break;
+      }
+  let pair = dup ? undefined : findTransferPair(draft, p, ctx.accounts, ctx.transactions);
+  // The bank's "paid to CRED / card bill" debit, after the card's "payment received" was
+  // recorded with a guessed bank: same payment; the bank in this message is the right one.
+  if (!dup && kind === 'transfer' && p.isCardBillPayment && accountId)
+    for (const t of ctx.transactions) {
+      const card = t.toAccountId ? live.find((a) => a.id === t.toAccountId) : undefined;
+      if (
+        counted(t) &&
+        t.kind === 'transfer' &&
+        card?.kind === 'credit_card' &&
+        (!toAccountId || toAccountId === card.id) &&
+        t.amount === amount &&
+        Math.abs(daysBetween(t.date, date)) <= 3
+      ) {
+        dup = { txn: t, reason: 'Same card payment from the other side' };
+        if (t.accountId !== accountId) pair = { txn: t, accountId, toAccountId: card.id };
+        break;
+      }
+    }
+  if (pair && !dup)
+    dup = { txn: pair.txn, reason: 'Other side of a transfer between your accounts' };
+  const needsTo = kind === 'transfer' && (!toAccountId || !accountId);
   return {
     ...draft,
     categoryId,
@@ -296,7 +435,9 @@ export function suggest(p: ParsedSms, ctx: Ctx): Suggestion {
     duplicateOf: dup?.txn,
     duplicateReason: dup?.reason,
     unknownLast4: !account && p.last4 ? p.last4 : undefined,
-    ready: !!accountId && !needsTo && !dup && amount > 0 && p.confidence >= 0.6,
+    pairTransfer: pair ? { accountId: pair.accountId, toAccountId: pair.toAccountId } : undefined,
+    datedAhead: datedAhead || undefined,
+    ready: !!accountId && !needsTo && !dup && !datedAhead && amount > 0 && p.confidence >= 0.6,
     person:
       kind === 'expense' || kind === 'income'
         ? personName(

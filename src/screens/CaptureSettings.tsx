@@ -4,7 +4,7 @@ import { ErrorNote, Panel } from '../design/components';
 import { Icon } from '../design/Icon';
 import { NOTIFICATION_APPS } from '../db/inbox';
 import { setMeta } from '../db/repo';
-import { Capture, isAndroidApp, type CaptureStatus } from '../native/capture';
+import { Capture, isAndroidApp, requestContacts, type CaptureStatus } from '../native/capture';
 import { QuickSetup } from './QuickSetup';
 import { useStore } from '../store';
 
@@ -149,6 +149,28 @@ export function CaptureSettings() {
               ))}
             </div>
           )}
+
+          <div className="item" style={{ flexWrap: 'wrap' }}>
+            <div className="item-main">
+              <div className="item-title">Contacts</div>
+              <div className="item-sub">
+                Only payments to people in your contacts ask “Spent or lent?”. Read on this phone.
+              </div>
+            </div>
+            {s?.contacts ? (
+              <Check on />
+            ) : (
+              <button
+                className="btn btn-primary"
+                onClick={async () => {
+                  await requestContacts();
+                  void refresh();
+                }}
+              >
+                Allow
+              </button>
+            )}
+          </div>
 
           <div className="item" style={{ flexWrap: 'wrap' }}>
             <div className="item-main">

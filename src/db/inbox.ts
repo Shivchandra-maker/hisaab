@@ -1,9 +1,11 @@
 import { PARSER_VERSION, parseSms, splitMessages } from '../domain/sms/parse';
 import { accountHintKey, suggest, type Suggestion } from '../domain/sms/match';
 import type { ID, InboxItem, InboxSource, ISODate, Transaction } from '../domain/types';
-import { todayIST } from '../domain/dates';
+import { addDays, todayIST } from '../domain/dates';
+import { contactFor, contactsLoaded } from '../domain/people';
 import { newId, stamp } from './db';
 import { db, getMeta, saveTransaction, setMeta } from './repo';
+import { personKey } from './needs';
 
 /**
  * The Review inbox: messages go in (pasted now; read automatically by the Android app in
@@ -48,10 +50,34 @@ async function context(receivedAt: ISODate) {
   };
 }
 
+/**
+ * One bank's debit and another's credit for the same move between your accounts: the side
+ * already recorded becomes the transfer, so it's neither spending nor income.
+ */
+async function applyPair(s: Suggestion) {
+  if (!s.pairTransfer || !s.duplicateOf) return;
+  const t = await db.transactions.get(s.duplicateOf.id);
+  if (!t || t.deletedAt) return;
+  const upd: Partial<Transaction> = {
+    kind: 'transfer',
+    accountId: s.pairTransfer.accountId,
+    toAccountId: s.pairTransfer.toAccountId,
+    categoryId: undefined,
+    splits: undefined,
+    merchant: undefined,
+    askLoan: undefined,
+    note: t.note ?? 'Between your accounts',
+    updatedAt: stamp(),
+  };
+  await db.transactions.put({ ...t, ...upd });
+  // Keep the in-memory copy (used for the next messages in this batch) in step.
+  Object.assign(s.duplicateOf, upd);
+}
+
 /** A message captured on the phone (see android/…/CaptureStore.java). */
 export interface CapturedMessage {
   id: string;
-  source: 'sms' | 'notification';
+  source: 'sms' | 'notification' | 'paste';
   sender?: string;
   body: string;
   /** Arrival time in ms since epoch. */
@@ -66,6 +92,12 @@ const emptySummary = (): IngestSummary => ({
   notices: 0,
   alreadySeen: 0,
 });
+
+/**
+ * Version of the Android capture filter (CaptureFilter.java). 2 = wide filter (H-01): after an
+ * update from 1, the phone's messages are read again once (native/capture.ts).
+ */
+export const CAPTURE_FILTER_VERSION = 2;
 
 /** Payment apps whose notifications we read, by Android package. */
 export const NOTIFICATION_APPS: Record<string, string> = {
@@ -147,6 +179,7 @@ async function ingestOne(
       item.duplicateOf = s.duplicateOf.id;
       item.note = s.duplicateReason;
       summary.duplicates++;
+      await applyPair(s);
     } else {
       summary.toReview++;
     }
@@ -242,20 +275,75 @@ export async function addFromInbox(
 /** People you told us about: "spent" = treat payments to them as spending without asking. */
 export type PersonAnswers = Record<string, 'spent' | 'lent' | 'borrowed'>;
 
-export const personKey = (name: string) => name.trim().toLowerCase().replace(/\s+/g, ' ');
+export { personKey };
+
+/** Ask about payments of at least this much (smaller ones to friends are usually shared costs). */
+export const LOAN_ASK_MIN = 50_000;
+/** Only recent payments ask; older history goes in as spending. */
+export const LOAN_RECENT_DAYS = 30;
+
+export type Flows = Map<string, { out: boolean; in: boolean }>;
+
+/** Which people money went to and came from (two-way money is the strongest loan signal). */
+export function loanFlows(txns: Transaction[]): Flows {
+  const m: Flows = new Map();
+  for (const t of txns) addFlow(m, t);
+  return m;
+}
+
+function addFlow(m: Flows, t: Pick<Transaction, 'kind' | 'merchant' | 'flow'>) {
+  if (!t.merchant) return;
+  const out = t.kind === 'expense' || (t.kind === 'debt' && t.flow === 'out');
+  const inn = t.kind === 'income' || (t.kind === 'debt' && t.flow === 'in');
+  if (!out && !inn) return;
+  const k = personKey(t.merchant);
+  const f = m.get(k) ?? { out: false, in: false };
+  m.set(k, { out: f.out || out, in: f.in || inn });
+}
 
 /**
- * Add every item that needs no decision: account known, not a duplicate. Payments to people
- * are added too (they count until you say otherwise) and flagged for one question.
- * Loads everything once, so a first import of hundreds of messages stays quick.
+ * "Spent or lent?" is asked only when it's likely to matter: the payee is one of your contacts,
+ * the payment is recent, and it's either ₹500+ or money has gone both ways with that person.
+ * People you've said "spent" for are never asked again.
  */
-export async function addAllReady(
-  onProgress?: (done: number, total: number) => void,
-): Promise<number> {
-  const items = await db.inbox.where('status').equals('new').toArray();
+export function shouldAskLoan(
+  t: Pick<Transaction, 'kind' | 'amount' | 'date' | 'merchant'>,
+  vpa: string | undefined,
+  today: ISODate,
+  answers: PersonAnswers,
+  flows: Flows,
+): boolean {
+  if (t.kind !== 'expense' && t.kind !== 'income') return false;
+  if (!contactsLoaded() || t.date < addDays(today, -LOAN_RECENT_DAYS)) return false;
+  const contact = contactFor(t.merchant, vpa);
+  if (!contact) return false;
+  const a = answers[personKey(t.merchant ?? contact)];
+  if (a === 'spent') return false;
+  if (a === 'lent' || a === 'borrowed') return true;
+  const f = flows.get(personKey(t.merchant ?? contact));
+  return t.amount >= LOAN_ASK_MIN || (!!f && f.out && f.in);
+}
+
+/** One run at a time: the app, capture sync and setup can all ask at once (D-01). */
+let addQueue: Promise<unknown> = Promise.resolve();
+
+export function addAllReady(onProgress?: (done: number, total: number) => void): Promise<number> {
+  const run = addQueue.then(() => addAllReadyNow(onProgress));
+  addQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function addAllReadyNow(onProgress?: (done: number, total: number) => void): Promise<number> {
+  const items = (await db.inbox.where('status').equals('new').toArray()).sort(
+    (a, b) =>
+      (a.parsed.date ?? a.receivedAt).localeCompare(b.parsed.date ?? b.receivedAt) ||
+      (a.receivedTs ?? 0) - (b.receivedTs ?? 0),
+  );
   if (!items.length) return 0;
   const base = await context(todayIST());
   const answers = await getMeta<PersonAnswers>('personAnswers', {});
+  const flows = loanFlows(base.transactions);
+  const today = todayIST();
   let n = 0;
   let seen = 0;
   for (const item of items) {
@@ -274,11 +362,19 @@ export async function addAllReady(
           merchant: s.merchant,
           paymentMode: s.paymentMode,
           externalRef: s.externalRef,
-          askLoan: !!s.person && answers[personKey(s.person)] !== 'spent',
+          askLoan:
+            shouldAskLoan(
+              { kind: s.kind, amount: s.amount, date: s.date, merchant: s.merchant },
+              item.parsed.vpa,
+              today,
+              answers,
+              flows,
+            ) || undefined,
         },
         { auto: true },
       );
       base.transactions.push(t);
+      addFlow(flows, t);
       base.accountHints = { ...base.accountHints, [accountHintKey(item.parsed)]: s.accountId };
       n++;
     } else if (s.duplicateOf) {
@@ -288,8 +384,24 @@ export async function addAllReady(
         note: s.duplicateReason,
         updatedAt: stamp(),
       });
+      await applyPair(s);
     }
     if (onProgress && seen % 25 === 0) onProgress(seen, items.length);
+  }
+  // Second look at what's left: a message can match one that came after it (the bank's "paid
+  // to CRED" before the card's "payment received", one side of a transfer before the other).
+  for (const item of items) {
+    const now = await db.inbox.get(item.id);
+    if (now?.status !== 'new') continue;
+    const s = suggest(item.parsed, { ...base, receivedAt: item.receivedAt });
+    if (!s.duplicateOf) continue;
+    await db.inbox.update(item.id, {
+      status: 'duplicate',
+      duplicateOf: s.duplicateOf.id,
+      note: s.duplicateReason,
+      updatedAt: stamp(),
+    });
+    await applyPair(s);
   }
   onProgress?.(items.length, items.length);
   return n;
@@ -318,20 +430,46 @@ export async function clearHandled(): Promise<number> {
 }
 
 /**
+ * A message added automatically that the new parser says moved no money (a bill reminder, a
+ * scam, a heads-up): remove its transaction, unless you've changed the amount or kind since.
+ */
+async function undoWrongAdd(item: InboxItem, parsed: InboxItem['parsed']): Promise<boolean> {
+  if (parsed.kind !== 'ignore' && parsed.kind !== 'autopay_notice' && parsed.kind !== 'emi_notice')
+    return false;
+  const t = item.txnId ? await db.transactions.get(item.txnId) : undefined;
+  if (
+    t &&
+    !t.deletedAt &&
+    (t.source === 'sms' || t.source === 'notification') &&
+    t.amount === item.parsed.amount &&
+    (t.kind === 'expense' || t.kind === 'income' || t.kind === 'refund')
+  )
+    await db.transactions.update(t.id, { deletedAt: stamp(), updatedAt: stamp() });
+  else if (t && !t.deletedAt) return false;
+  await db.inbox.update(item.id, {
+    parsed,
+    status: parsed.kind === 'ignore' ? 'ignored' : 'notice',
+    note: `${parsed.reason ?? 'Not a payment'} — removed`,
+    updatedAt: stamp(),
+  });
+  return true;
+}
+
+/**
  * After a parser upgrade, read again every message still waiting (or set aside by the parser,
- * not by you), so fixes apply to messages you already pasted.
+ * not by you), so fixes apply to messages you already pasted. Payments added automatically
+ * from messages that turn out not to be payments are taken back out.
  */
 export async function reparseInboxIfNeeded(): Promise<number> {
   if ((await getMeta<number>('parserVersion', 0)) === PARSER_VERSION) return 0;
   const items = await db.inbox.toArray();
   let n = 0;
   for (const item of items) {
-    if (
-      item.status === 'added' ||
-      item.note === 'Ignored by you' ||
-      item.note === 'Notice dismissed'
-    )
+    if (item.note === 'Ignored by you' || item.note === 'Notice dismissed') continue;
+    if (item.status === 'added') {
+      if (await undoWrongAdd(item, parseSms(item.rawText))) n++;
       continue;
+    }
     const parsed = parseSms(item.rawText);
     const ctx = await context(item.receivedAt);
     let status: InboxItem['status'] = 'new';
@@ -349,6 +487,7 @@ export async function reparseInboxIfNeeded(): Promise<number> {
         status = 'duplicate';
         duplicateOf = s.duplicateOf.id;
         note = s.duplicateReason;
+        await applyPair(s);
       }
     }
     await db.inbox.update(item.id, { parsed, status, note, duplicateOf, updatedAt: stamp() });

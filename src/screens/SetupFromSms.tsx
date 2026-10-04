@@ -6,7 +6,7 @@ import { formatINR } from '../domain/money';
 import type { FoundAccount } from '../domain/sms/discover';
 import type { CapturedMessage } from '../db/inbox';
 import { finishSetup, pastedToCaptured, scanMessages, type SetupChoice } from '../db/setup';
-import { Capture, isAndroidApp } from '../native/capture';
+import { Capture, isAndroidApp, requestContacts } from '../native/capture';
 import { useStore } from '../store';
 import { useUI } from '../ui';
 
@@ -46,6 +46,8 @@ export function SetupFromSms({ onBack }: { onBack: () => void }) {
         setStep('source');
         return;
       }
+      // Contacts tell friends from shops, so "Spent or lent?" is only asked about people you know.
+      await requestContacts().catch(() => false);
       const { messages: msgs } = await Capture.readInbox({
         sinceMs: Date.now() - SCAN_DAYS * 86_400_000,
         limit: 20_000,
@@ -196,7 +198,7 @@ function FoundAccounts({
   error: string;
 }) {
   const [keep, setKeep] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(found.map((f) => [f.key, true])),
+    Object.fromEntries(found.map((f) => [f.key, !f.unsure])),
   );
   const [merge, setMerge] = useState<Record<string, boolean | undefined>>({});
   const [names, setNames] = useState<Record<string, string>>(() =>

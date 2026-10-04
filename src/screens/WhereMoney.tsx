@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { EmptyState, Progress } from '../design/components';
+import { EmptyState } from '../design/components';
+import { Icon } from '../design/Icon';
 import { formatINR } from '../domain/money';
 import { FALLBACK_CATEGORY } from '../domain/sms/match';
 import { shopsToSort } from '../domain/sms/shops';
@@ -67,19 +68,19 @@ export function WhereMoney() {
         </p>
       </div>
 
-      <div className="stack" style={{ gap: 6 }}>
-        <Progress value={pct / 100} />
-        <div className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
-          {top.length === shops.length
-            ? `${shops.length} shop${shops.length === 1 ? '' : 's'} to sort`
-            : `These ${top.length} cover ${pct}% of your spending`}
-        </div>
+      {/* D-03: a plain fact, not a progress bar — nothing here is "done" until you tap the button. */}
+      <div className="sort-facts">
+        <span>
+          <b>{top.length}</b> shop{top.length === 1 ? '' : 's'} · {formatINR(covered)}
+        </span>
+        {top.length < shops.length && <span>{pct}% of your unsorted spending</span>}
       </div>
 
       <div className="found-list">
         {top.map((s) => {
           const value = picked[s.key] ?? s.guess ?? '';
           const guessed = !picked[s.key] && !!s.guess;
+          const state = value ? (guessed ? 'guess' : 'set') : 'empty';
           return (
             <div key={s.key} className={`found-row shop-row ${value ? '' : 'found-check'}`}>
               <div className="found-main">
@@ -88,25 +89,34 @@ export function WhereMoney() {
                   {s.payments} payment{s.payments === 1 ? '' : 's'} · {formatINR(s.total)}
                 </div>
               </div>
-              <select
-                aria-label={`Category for ${s.name}`}
-                className={`cat-pick ${value ? (guessed ? 'is-guess' : 'is-set') : 'is-empty'}`}
-                value={value}
-                onChange={(e) => setPicked({ ...picked, [s.key]: e.target.value })}
-              >
-                <option value="">Pick</option>
-                {cats.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
+              <div className={`cat-pick-wrap is-${state}`}>
+                {/* Colour is never the only signal (WCAG 1.4.1): each state is also written. */}
+                <span className="cat-pick-tag" aria-hidden="true">
+                  {state === 'guess' ? 'Our guess' : state === 'set' ? 'Your pick' : 'Needs a pick'}
+                </span>
+                <div className="cat-pick-box">
+                  <select
+                    aria-label={`Category for ${s.name}${state === 'guess' ? ' (our guess)' : ''}`}
+                    className="cat-pick"
+                    value={value}
+                    onChange={(e) => setPicked({ ...picked, [s.key]: e.target.value })}
+                  >
+                    <option value="">Pick…</option>
+                    {cats.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <Icon name={state === 'set' ? 'check' : 'chevdown'} size={14} />
+                </div>
+              </div>
             </div>
           );
         })}
       </div>
       <p className="muted" style={{ margin: 0, fontSize: 'var(--fs-sm)' }}>
-        Green = our guess. Tap to change.
+        Tap a category to change it — it’s remembered for next time.
         {shops.length > top.length &&
           ` ${shops.length - top.length} smaller shops can wait; they stay in ${cats.find((c) => c.id === FALLBACK_CATEGORY)?.name ?? 'Miscellaneous'} until you sort them.`}
       </p>

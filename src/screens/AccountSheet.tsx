@@ -95,10 +95,10 @@ export function AccountSheet({
           paymentAccountId: payFrom || undefined,
         };
       }
-      if (toPaise(opening || '0') < 0)
-        throw new ValidationError(
-          isCard ? 'Amount owed can’t be negative.' : 'Balance can’t be negative.',
-        );
+      // Bank accounts can be overdrawn and a wallet can look negative until a top-up is found,
+      // so only cards refuse a negative amount (that would be a credit balance).
+      if (isCard && toPaise(opening || '0') < 0)
+        throw new ValidationError('Amount owed can’t be negative.');
       if (last4 && !/^\d{4}$/.test(last4.trim()))
         throw new ValidationError('Last 4 digits should be 4 numbers.');
       const saved = await saveAccount(draft as Account);

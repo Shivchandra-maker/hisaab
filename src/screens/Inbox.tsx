@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CategoryAvatar, ConfirmButton, EmptyState, ErrorNote, Field } from '../design/components';
 import { Icon } from '../design/Icon';
 import { addDays, formatDate } from '../domain/dates';
 import { cleanAmountInput, formatINR, toPaise, toRupees } from '../domain/money';
-import { accountHintKey, suggest, type Suggestion } from '../domain/sms/match';
+import { suggest, type Suggestion } from '../domain/sms/match';
 import type { InboxItem, Transaction, TxnKind } from '../domain/types';
 import {
+  allSpentFor,
   openDebtsWith,
   resolvePersonPayment,
   splitWithFriends,
@@ -20,10 +21,13 @@ import {
   dismissNotice,
   ignoreInboxItem,
   ingestMessages,
+  personKey,
   restoreInboxItem,
   type IngestSummary,
 } from '../db/inbox';
 import { needsDupCheck, useStore } from '../store';
+import { Capture, isAndroidApp, requestContacts } from '../native/capture';
+import { refreshCheckpoints } from '../db/checkpoints';
 import { useUI } from '../ui';
 
 const kindLabel: Record<string, string> = {
@@ -47,15 +51,15 @@ function summaryText(s: IngestSummary, added = 0): string {
 
 /** Inbox = only what needs you. Everything Hisaab understood is already added. */
 export function Inbox() {
-  const { inbox, accounts, rules, transactions, today, meta } = useStore();
+  const { inbox, accounts, transactions, today, meta, needs } = useStore();
   const { toast, go } = useUI();
   const [text, setText] = useState('');
   const [result, setResult] = useState('');
   const [busy, setBusy] = useState(false);
   const autoAdd = meta.autoAdd !== false;
 
-  const fresh = inbox.filter((i) => i.status === 'new');
-  const dups = inbox.filter(needsDupCheck);
+  // D-01: the same grouping (and the same count) the badge and Home banner use.
+  const { people, groups, dups, other, ready, suggestions, count: needYou } = needs;
   const notices = inbox.filter((i) => i.status === 'notice');
   const handled = inbox.filter(
     (i) =>
@@ -63,50 +67,11 @@ export function Inbox() {
       i.status === 'ignored' ||
       (i.status === 'duplicate' && !needsDupCheck(i)),
   );
-  const askLoan = transactions.filter((t) => t.askLoan);
-
-  const suggestions = useMemo(() => {
-    const ctx = {
-      accounts,
-      rules,
-      transactions,
-      accountHints: (meta.accountHints as Record<string, string>) ?? {},
-    };
-    return new Map(
-      fresh.map((i) => [i.id, suggest(i.parsed, { ...ctx, receivedAt: i.receivedAt })]),
-    );
-  }, [fresh, accounts, rules, transactions, meta.accountHints]);
-
-  // Unknown accounts, grouped: one question per account, not per message.
-  const groups = useMemo(() => {
-    const m = new Map<string, InboxItem[]>();
-    for (const i of fresh) {
-      const s = suggestions.get(i.id);
-      if (!s || s.accountId || !(i.parsed.last4 || i.parsed.bank || i.parsed.walletName)) continue;
-      const k = accountHintKey(i.parsed);
-      m.set(k, [...(m.get(k) ?? []), i]);
-    }
-    return [...m.entries()];
-  }, [fresh, suggestions]);
-  const grouped = new Set(groups.flatMap(([, items]) => items.map((i) => i.id)));
-  const ready = fresh.filter((i) => suggestions.get(i.id)?.ready);
-  const other = fresh.filter((i) => !grouped.has(i.id) && !suggestions.get(i.id)?.ready);
-
-  // New accounts or rules can make waiting messages ready: add them on their own.
-  const adding = useRef(false);
-  useEffect(() => {
-    if (!autoAdd || !ready.length || adding.current) return;
-    adding.current = true;
-    void addAllReady().finally(() => (adding.current = false));
-  }, [autoAdd, ready.length]);
-
   const weekAgo = addDays(today, -7);
   const autoThisWeek = transactions.filter(
     (t) =>
       (t.source === 'sms' || t.source === 'notification') && t.createdAt.slice(0, 10) >= weekAgo,
   ).length;
-  const needYou =
-    askLoan.length + groups.length + dups.length + other.length + (autoAdd ? 0 : ready.length);
 
   const read = async () => {
     if (!text.trim()) return;
@@ -114,6 +79,7 @@ export function Inbox() {
     try {
       const s = await ingestMessages(text, { source: 'paste', receivedAt: today });
       const added = autoAdd ? await addAllReady() : 0;
+      await refreshCheckpoints();
       setResult(summaryText(s, added));
       setText('');
     } finally {
@@ -134,8 +100,10 @@ export function Inbox() {
         </div>
       </div>
 
-      {askLoan.map((t) => (
-        <PersonCard key={t.id} txn={t} />
+      {isAndroidApp && <ContactsPrompt />}
+
+      {people.map((list) => (
+        <PersonGroup key={personKey(list[0]!.merchant ?? '?')} txns={list} />
       ))}
 
       {groups.map(([key, items]) => (
@@ -228,8 +196,9 @@ export function Inbox() {
 
       {notices.length > 0 && (
         <details className="panel">
-          <summary className="row" style={{ cursor: 'pointer' }}>
+          <summary className="row fold" style={{ cursor: 'pointer' }}>
             <b>Autopay & EMI notices ({notices.length})</b>
+            <Icon name="chevdown" size={16} className="fold-chev" />
           </summary>
           <p className="faint" style={{ margin: '8px 0', fontSize: 'var(--fs-sm)' }}>
             These aren’t payments yet. Autopay and EMI tracking will use them in the coming phases.
@@ -244,8 +213,9 @@ export function Inbox() {
 
       {handled.length > 0 && (
         <details className="panel">
-          <summary className="row" style={{ cursor: 'pointer' }}>
+          <summary className="row fold" style={{ cursor: 'pointer' }}>
             <b>Handled messages ({handled.length})</b>
+            <Icon name="chevdown" size={16} className="fold-chev" />
           </summary>
           <div className="list" style={{ marginTop: 8 }}>
             {handled.slice(0, 50).map((i) => (
@@ -282,6 +252,80 @@ export function Inbox() {
 }
 
 /** "Spent or lent?" for a payment to (or from) a person. Changes that transaction; never adds one. */
+/** Ask for contacts once: with them we only ask about friends, never shops. */
+function ContactsPrompt() {
+  const { toast } = useUI();
+  const [granted, setGranted] = useState<boolean | null>(null);
+  useEffect(() => {
+    void Capture.status()
+      .then((s) => setGranted(!!s.contacts))
+      .catch(() => setGranted(true));
+  }, []);
+  if (granted !== false) return null;
+  return (
+    <article className="panel needs-card">
+      <div className="needs-label is-person">Payments to friends</div>
+      <p className="muted" style={{ margin: 0, fontSize: 'var(--fs-sm)' }}>
+        Allow contacts and Hisaab only asks “Spent or lent?” for people you know — never for shops.
+        Contacts are read on this phone and never leave it.
+      </p>
+      <div>
+        <button
+          className="btn btn-primary"
+          onClick={async () => {
+            const ok = await requestContacts();
+            setGranted(ok);
+            toast(ok ? 'Contacts allowed' : 'Without contacts, Hisaab won’t ask about loans');
+          }}
+        >
+          Allow contacts
+        </button>
+      </div>
+    </article>
+  );
+}
+
+/** Everything waiting for one person: answer all at once, or one by one. */
+function PersonGroup({ txns }: { txns: Transaction[] }) {
+  const { toast } = useUI();
+  const [open, setOpen] = useState(false);
+  const person = txns[0]!.merchant ?? 'Someone';
+  const out = txns.filter((t) => t.kind === 'expense');
+  const inn = txns.filter((t) => t.kind !== 'expense');
+  const sum = (l: Transaction[]) => l.reduce((n, t) => n + t.amount, 0);
+  if (txns.length === 1) return <PersonCard txn={txns[0]!} />;
+  return (
+    <>
+      <article className="panel needs-card">
+        <div className="needs-label is-person">Spent or lent?</div>
+        <div className="item-main">
+          <div className="item-title">{person}</div>
+          <div className="item-sub" style={{ whiteSpace: 'normal' }}>
+            {txns.length} payments
+            {out.length > 0 && ` · paid ${formatINR(sum(out))}`}
+            {inn.length > 0 && ` · received ${formatINR(sum(inn))}`}
+          </div>
+        </div>
+        <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+          <button
+            className="btn btn-primary"
+            onClick={async () => {
+              const n = await allSpentFor(person);
+              toast(`${n} payments kept as normal · won’t ask about ${person} again`);
+            }}
+          >
+            {inn.length && !out.length ? 'All income' : 'All spent'}
+          </button>
+          <button className="btn" onClick={() => setOpen(!open)}>
+            {open ? 'Hide' : 'Review each'}
+          </button>
+        </div>
+      </article>
+      {open && txns.map((t) => <PersonCard key={t.id} txn={t} />)}
+    </>
+  );
+}
+
 function PersonCard({ txn }: { txn: Transaction }) {
   const { accountById } = useStore();
   const { toast } = useUI();

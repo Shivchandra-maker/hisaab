@@ -8,6 +8,7 @@ import { useStore } from '../store';
 import { useUI } from '../ui';
 import { AdjustSheet } from './AccountSheet';
 import { TxnRow } from './TxnRow';
+import { BankCheck } from './BankCheck';
 
 /** Register for a bank, cash or wallet account: balance, running balance per day. */
 export function AccountDetail({ id }: { id: string }) {
@@ -85,6 +86,7 @@ export function AccountDetail({ id }: { id: string }) {
             Doesn’t match? Update balance
           </button>
         </div>
+        <BankCheck account={acc} />
       </section>
 
       <Panel title="Activity">

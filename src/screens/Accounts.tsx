@@ -51,6 +51,8 @@ export function Accounts() {
         </div>
       </section>
 
+      <PeopleSummary />
+
       {cards.length > 0 && (
         <Panel title="Credit cards">
           <div className="list">
@@ -134,7 +136,6 @@ export function Accounts() {
           />
         </section>
       )}
-      <PeopleSummary />
       {archivedCount > 0 && (
         <div>
           <button

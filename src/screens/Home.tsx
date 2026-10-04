@@ -1,4 +1,6 @@
 import { useMemo } from 'react';
+import { catchUp } from '../native/capture';
+import { usePullToRefresh } from '../design/usePullToRefresh';
 import {
   Amount,
   CategoryAvatar,
@@ -46,7 +48,11 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
     rules,
   } = useStore();
   const toSort = useMemo(() => shopsToSort(txns, rules).shops.length, [txns, rules]);
-  const { go, openTxn } = useUI();
+  const { go, openTxn, toast } = useUI();
+  const pull = usePullToRefresh(async () => {
+    const n = await catchUp(3);
+    toast(n ? `${n} new payment${n === 1 ? '' : 's'}` : 'Up to date');
+  });
   const cards = accounts.filter((a) => a.card && !a.archived);
   const isCurrent = month === monthOf(today);
 
@@ -93,8 +99,18 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
 
   return (
     <div className="page">
+      {pull.indicator}
       <div className="page-head">
         <MonthSwitcher month={month} onChange={setMonth} max={monthOf(today)} />
+        <span className="spacer" />
+        <button
+          className="icon-btn bell-btn"
+          aria-label={inboxNew ? `Inbox: ${inboxNew} need you` : 'Inbox'}
+          onClick={() => go('inbox')}
+        >
+          <Icon name="inbox" size={20} />
+          {inboxNew > 0 && <span className="badge badge-dot">{inboxNew}</span>}
+        </button>
       </div>
 
       {inboxNew > 0 && (
@@ -164,6 +180,12 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
             <div className="label">{s.net < 0 ? 'Over income' : 'Saved'}</div>
             <div className="v num">{formatINR(Math.abs(s.net))}</div>
           </div>
+          {s.invested > 0 && (
+            <div className="stat">
+              <div className="label">Invested</div>
+              <div className="v num">{formatINR(s.invested)}</div>
+            </div>
+          )}
           {cards.length > 0 && (
             <div className="stat">
               <div className="label">On cards</div>

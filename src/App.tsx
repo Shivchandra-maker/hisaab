@@ -20,6 +20,7 @@ import { Welcome } from './screens/Welcome';
 import { WhereMoney } from './screens/WhereMoney';
 import { handleBackButton, isAndroidApp, startCapture } from './native/capture';
 import { QuickSetup } from './screens/QuickSetup';
+import { addAllReady } from './db/inbox';
 import { useStore } from './store';
 import { UICtx, type TxnDraft, type UI } from './ui';
 
@@ -27,10 +28,10 @@ import { UICtx, type TxnDraft, type UI } from './ui';
 const NAV: { id: string; label: string; tab?: string; icon: string }[] = [
   { id: 'home', label: 'Home', tab: 'Home', icon: 'home' },
   { id: 'transactions', label: 'Activity', tab: 'Activity', icon: 'list' },
-  { id: 'inbox', label: 'Inbox', tab: 'Inbox', icon: 'inbox' },
+  { id: 'inbox', label: 'Inbox', icon: 'inbox' },
+  { id: 'insights', label: 'Insights', tab: 'Insights', icon: 'chart' },
   { id: 'accounts', label: 'Accounts', tab: 'Accounts', icon: 'wallet' },
   { id: 'people', label: 'Lent & borrowed', icon: 'transfer' },
-  { id: 'insights', label: 'Insights', icon: 'chart' },
   { id: 'settings', label: 'Settings', tab: 'More', icon: 'dots' },
 ];
 
@@ -40,9 +41,13 @@ const sectionOf = (r: string) =>
     ? 'accounts'
     : ['categories', 'style', 'rules'].includes(r)
       ? 'settings'
-      : r === 'sort'
-        ? 'home'
+      : r === 'sort' || r === 'inbox'
+        ? 'home' // Inbox opens from the bell on Home (D-02)
         : r;
+
+/** The + button only where adding a payment is what you came to do (D-05). */
+const showFab = (r: string) =>
+  r === 'home' || r === 'transactions' || r.startsWith('card-') || r.startsWith('acct-');
 
 const readRoute = () => window.location.hash.replace('#', '') || 'home';
 
@@ -53,7 +58,7 @@ type Editor =
   | null;
 
 export function App() {
-  const { today, isSample, onboarded, meta, inboxNew } = useStore();
+  const { today, isSample, onboarded, meta, inboxNew, needs } = useStore();
   const [route, setRoute] = useState(readRoute);
   const [month, setMonth] = useState(monthOf(today));
   const [editor, setEditor] = useState<Editor>(null);
@@ -87,6 +92,24 @@ export function App() {
     }),
     [go],
   );
+
+  // Messages Hisaab fully understood are added as soon as they're ready (new account, new rule,
+  // sample data…) — not when the Inbox happens to be opened. Keeps every total and the
+  // "needs you" count the same on every screen (D-01). addAllReady runs one at a time, so this
+  // and the phone's capture sync can't add the same message twice.
+  const autoAdd = meta.autoAdd !== false;
+  const readyCount = needs.ready.length;
+  // Bumped after a run that added something, so messages that became ready meanwhile get picked up.
+  const [addRun, setAddRun] = useState(0);
+  useEffect(() => {
+    if (!onboarded || !autoAdd || !readyCount) return;
+    let live = true;
+    // Re-run only if this run added something (a message that can't be added must not loop).
+    void addAllReady().then((n) => live && n > 0 && setAddRun((r) => r + 1));
+    return () => {
+      live = false;
+    };
+  }, [onboarded, autoAdd, readyCount, addRun]);
 
   // Android app: file captured SMS/notifications into the Inbox; back button behaviour.
   const editorOpen = useRef(false);
@@ -195,7 +218,10 @@ export function App() {
             {NAV.map((n) => (
               <button
                 key={n.id}
-                aria-current={section === n.id ? 'page' : undefined}
+                aria-current={
+                  // Desktop sidebar lists Inbox on its own, so it lights up there, not Home.
+                  (route === 'inbox' ? n.id === 'inbox' : section === n.id) ? 'page' : undefined
+                }
                 onClick={() => go(n.id)}
               >
                 <Icon name={n.icon} />
@@ -243,8 +269,7 @@ export function App() {
             <button
               key={n.id}
               aria-current={
-                section === n.id ||
-                (n.id === 'settings' && (section === 'insights' || section === 'people'))
+                section === n.id || (n.id === 'settings' && section === 'people')
                   ? 'page'
                   : undefined
               }
@@ -260,7 +285,7 @@ export function App() {
             </button>
           ))}
         </nav>
-        {route !== 'sort' && (
+        {showFab(route) && (
           <button
             className="fab"
             onClick={() => setEditor({ type: 'txn' })}

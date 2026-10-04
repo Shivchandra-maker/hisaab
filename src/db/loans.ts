@@ -1,7 +1,9 @@
 import { debtBalance } from '../domain/ledger';
 import type { Debt, ID, Transaction } from '../domain/types';
 import { newId, stamp } from './db';
-import { personKey, type PersonAnswers } from './inbox';
+import { parseSms } from '../domain/sms/parse';
+import { todayIST } from '../domain/dates';
+import { loanFlows, personKey, shouldAskLoan, type PersonAnswers } from './inbox';
 import { db, getMeta, refreshDebtSettlement, setMeta } from './repo';
 
 /**
@@ -68,7 +70,8 @@ export async function resolvePersonPayment(txnId: ID, person: string, choice: Pe
   const base = { ...t, askLoan: undefined, updatedAt: stamp() };
   let debtId: ID | undefined;
   if (choice === 'spent' || choice === 'income') {
-    await db.transactions.put(base);
+    // false = answered, so a later review never asks about it again.
+    await db.transactions.put({ ...base, askLoan: false });
   } else {
     const direction: Debt['direction'] =
       choice === 'lent' || choice === 'repaid_me' ? 'lent' : 'borrowed';
@@ -144,4 +147,48 @@ export async function splitWithFriends(
     });
     await refreshDebtSettlement(debt.id);
   }
+}
+
+/** Everything waiting for one person was ordinary spending/income: answer them all at once. */
+export async function allSpentFor(person: string): Promise<number> {
+  const txns = (await db.transactions.toArray()).filter(
+    (t) => t.askLoan && !t.deletedAt && t.merchant && personKey(t.merchant) === personKey(person),
+  );
+  for (const t of txns)
+    await resolvePersonPayment(t.id, person, t.kind === 'income' ? 'income' : 'spent');
+  return txns.length;
+}
+
+/**
+ * Re-check every unanswered question with the current rules (contacts, recent, ₹500+ or two-way).
+ * Runs on start and when contacts load, so older versions' long lists shrink on their own.
+ */
+export async function reviewLoanQuestions(): Promise<{ asked: number; cleared: number }> {
+  const all = await db.transactions.toArray();
+  const answers = await getMeta<PersonAnswers>('personAnswers', {});
+  const flows = loanFlows(all.filter((t) => !t.deletedAt));
+  const today = todayIST();
+  let asked = 0;
+  let cleared = 0;
+  for (const t of all) {
+    if (t.deletedAt || t.askLoan === false) continue;
+    if (t.source !== 'sms' && t.source !== 'notification') continue;
+    if (t.kind !== 'expense' && t.kind !== 'income') {
+      if (t.askLoan) {
+        await db.transactions.update(t.id, { askLoan: undefined });
+        cleared++;
+      }
+      continue;
+    }
+    const vpa = t.rawText ? parseSms(t.rawText).vpa : undefined;
+    const ask = shouldAskLoan(t, vpa, today, answers, flows);
+    if (ask && !t.askLoan) {
+      await db.transactions.update(t.id, { askLoan: true });
+      asked++;
+    } else if (!ask && t.askLoan) {
+      await db.transactions.update(t.id, { askLoan: undefined });
+      cleared++;
+    }
+  }
+  return { asked, cleared };
 }

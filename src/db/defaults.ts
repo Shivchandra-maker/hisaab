@@ -18,6 +18,8 @@ const expense: [id: string, name: string, icon: string, color: string][] = [
   ['education', 'Education', 'book', 'cat-3'],
   ['gifts', 'Gifts & family', 'gift', 'cat-4'],
   ['fees', 'Fees & charges', 'receipt', 'cat-8'],
+  // Not spending: SIPs and other investments are shown as "Invested" (see ledger INVESTMENTS).
+  ['investments', 'Investments', 'chart', 'cat-9'],
   ['other', 'Miscellaneous', 'dots', 'cat-6'],
 ];
 

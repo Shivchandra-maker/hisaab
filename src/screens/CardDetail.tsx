@@ -1,5 +1,6 @@
 import { Icon } from '../design/Icon';
 import { Panel, Progress, StatusPill } from '../design/components';
+import { BankCheck } from './BankCheck';
 import { periodClosingIn, recentPeriods, type StatementPeriod } from '../domain/cycle';
 import {
   addMonths,
@@ -169,6 +170,25 @@ export function CardDetail({ id }: { id: string }) {
           later · paid from {payFrom?.name}
         </div>
       </section>
+
+      <BankCheck account={card} />
+      {card.check &&
+        card.check.date >= s.currentPeriod.start &&
+        (() => {
+          // CRED-style unbilled from the bank's own numbers: owed − what's left on the last bill.
+          const bankUnbilled = Math.max(0, card.check.amount - s.dueNow);
+          const gap = bankUnbilled - s.unbilled;
+          if (Math.abs(gap) < 100) return null;
+          return (
+            <div className="note note-warn">
+              Your bank’s numbers put unbilled spending at about <b>{formatINR(bankUnbilled)}</b>;
+              Hisaab found {formatINR(s.unbilled)} in your messages.{' '}
+              {gap > 0
+                ? `The ${formatINR(gap)} gap is usually an EMI instalment, a fee or a charge that had no SMS.`
+                : `${formatINR(-gap)} more than the bank — check the list below for a payment counted twice.`}
+            </div>
+          );
+        })()}
 
       <div className="row" style={{ marginTop: -8 }}>
         <span className="spacer" />

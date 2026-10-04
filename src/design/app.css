@@ -1675,31 +1675,80 @@ button.found-name:hover {
 .shop-row {
   align-items: center;
 }
-.cat-pick {
+.sort-facts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+}
+.sort-facts b {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+/* D-03: category picker on "Where does your money go?" — three states, told apart by
+   shape and words as well as colour: guess (dashed), your pick (solid + ✓), empty (amber). */
+.cat-pick-wrap {
   flex: none;
-  max-width: 46%;
+  max-width: 48%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+.cat-pick-tag {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-3);
+}
+.cat-pick-box {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+}
+.cat-pick-box svg {
+  position: absolute;
+  right: 12px;
+  pointer-events: none;
+  color: var(--accent);
+}
+.cat-pick {
+  max-width: 100%;
+  min-height: 40px;
   font: inherit;
   font-size: var(--fs-sm);
   font-weight: 600;
-  padding: 8px 12px;
+  padding: 8px 32px 8px 14px;
   border-radius: var(--r-pill);
-  border: 0;
+  border: 1.5px dashed var(--accent);
+  background: var(--surface);
+  color: var(--accent-strong);
   cursor: pointer;
   appearance: none;
-  text-align: center;
+  text-overflow: ellipsis;
 }
-.cat-pick.is-guess,
-.cat-pick.is-set {
+.is-set .cat-pick {
+  border-style: solid;
   background: var(--accent-soft);
-  color: var(--accent-strong);
 }
-.cat-pick.is-set {
-  outline: 1.5px solid var(--accent);
+.is-set .cat-pick-tag {
+  color: var(--accent);
 }
-.cat-pick.is-empty {
-  background: var(--surface);
+.is-empty .cat-pick {
+  border-color: var(--warn);
   color: var(--warn);
-  outline: 1px dashed var(--warn);
+}
+.is-empty .cat-pick-box svg,
+.is-empty .cat-pick-tag {
+  color: var(--warn);
+}
+@media (pointer: coarse) {
+  .cat-pick {
+    min-height: 44px;
+  }
 }
 .page.narrow {
   max-width: 520px;
@@ -1750,4 +1799,98 @@ button.found-name:hover {
 .found-last4 {
   font-weight: 500;
   color: var(--fg-3);
+}
+
+/* Merchant rules: name always visible; category on its own line on phones */
+.rule-row {
+  flex-wrap: wrap;
+}
+.rule-row .item-main {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.rule-row .item-title {
+  white-space: normal;
+}
+.rule-cat {
+  flex: 1 1 100%;
+  margin-left: 44px;
+  width: auto;
+}
+@media (min-width: 640px) {
+  .rule-row {
+    flex-wrap: nowrap;
+  }
+  .rule-cat {
+    flex: 0 0 220px;
+    margin-left: 0;
+    order: 1;
+  }
+  .rule-row .icon-btn {
+    order: 2;
+  }
+}
+
+/* Pull to refresh (Android) */
+.ptr {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+  transition: height 0.15s var(--ease);
+}
+.ptr.is-busy span {
+  animation: ptr-spin 0.9s linear infinite;
+}
+@keyframes ptr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.bell-btn {
+  position: relative;
+}
+.bell-btn .badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+}
+.bank-check {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+}
+
+/* D-09: one word per platform ("More" tab on phones, "Settings" in the desktop sidebar). */
+.desktop-only-inline {
+  display: none;
+}
+@media (min-width: 761px) {
+  .phone-only-inline {
+    display: none;
+  }
+  .desktop-only-inline {
+    display: inline;
+  }
+}
+/* D-11: collapsible sections show a chevron that turns when open. */
+summary.fold {
+  list-style: none;
+  justify-content: space-between;
+}
+summary.fold::-webkit-details-marker {
+  display: none;
+}
+summary.fold .fold-chev {
+  color: var(--fg-3);
+  transition: transform 0.15s ease;
+}
+details[open] > summary.fold .fold-chev {
+  transform: rotate(180deg);
 }

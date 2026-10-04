@@ -360,3 +360,126 @@ describe('card statements', () => {
     expect(b.date).toBe('2026-09-20');
   });
 });
+
+describe('balance updates', () => {
+  it('reads a balance enquiry reply without making a payment', () => {
+    const p = parseSms(
+      'Dear Customer, Avl Bal in your HDFC Bank A/c XX4521 is Rs.23,450.50 as on 03-10-26 10:15. Call 18002026161 for help.',
+    );
+    expect(p).toMatchObject({
+      kind: 'ignore',
+      reason: 'Balance update',
+      last4: '4521',
+      balance: 2345050,
+      date: '2026-10-03',
+    });
+  });
+});
+
+describe('testing round 3 (S1 fixes)', () => {
+  it('H-04: card bill-due reminder is never a payment', () => {
+    for (const s of [
+      'Payment of Rs 4,604.00 on HDFC Bank Credit Card xx8834 is due on 06-10-26. Min due: Rs 500. Ignore if paid',
+      'Your Kotak Credit Card bill of Rs.12,450.00 is due on 15-10-2026. Minimum amount due Rs.623. Please pay on time.',
+      'Reminder: Total Amount Due of INR 8,900.00 on your Axis Bank Credit Card XX7441 is payable by 21-10-26.',
+      'EMI of Rs 3,250 for your loan a/c XX9911 is due on 05-11-26. Please keep sufficient balance.',
+    ]) {
+      const p = parseSms(s);
+      expect(p.kind, s).toBe('ignore');
+      expect(p.reason, s).toBe('Payment reminder — not paid yet');
+    }
+    const p = parseSms(
+      'Payment of Rs 4,604.00 on HDFC Bank Credit Card xx8834 is due on 06-10-26. Min due: Rs 500. Ignore if paid',
+    );
+    expect(p).toMatchObject({ instrument: 'credit_card', last4: '8834' });
+  });
+
+  it('H-04: a bill actually paid is still a payment', () => {
+    expect(
+      parseSms(
+        'Rs.13318.00 debited from A/c XX4521 on 01-Apr-26 to VPA cred.club@axisb (UPI Ref No 426715777045)',
+      ).kind,
+    ).toBe('debit');
+    expect(
+      parseSms(
+        'DEAR CARDMEMBER, PAYMENT OF Rs. 9084.00 RECEIVED TOWARDS YOUR HDFC BANK CREDIT CARD ENDING 8834 ON 01-11-2025.',
+      ).kind,
+    ).toBe('card_payment');
+  });
+
+  it('H-06: statement "payable by" date is the due date, not the statement date', () => {
+    const p = parseSms(
+      'Your HDFC Bank Credit Card 8834 statement for Apr-26 has been generated. Total due Rs.16688.00, Minimum due Rs.834.40, payable by 05-May-26.',
+    );
+    expect(p.statement).toMatchObject({ totalDue: 1668800, dueDate: '2026-05-05' });
+    expect(p.date).toBeUndefined();
+  });
+
+  it('H-03: scam and phishing messages are never payments', () => {
+    for (const s of [
+      'Your SBI account is suspended. Rs.4999 will be debited. Click http://sbi-reward.in to stop',
+      'Dear Customer, your KYC is pending. Your account will be blocked today. Update at http://kyc-paytm-verify.co Rs.1 fee',
+      'Dear SBI user, Rs.9,850 debited from your account. If not done by you click https://sbi-secure-login.top to block',
+      'Your HDFC account will be blocked. Rs 25,000 credited as reward points, claim at bit.ly/hdfc-redeem',
+    ]) {
+      const p = parseSms(s);
+      expect(p.kind, s).toBe('ignore');
+    }
+    expect(
+      parseSms(
+        'Your SBI account is suspended. Rs.4999 will be debited. Click http://sbi-reward.in to stop',
+      ).reason,
+    ).toBe('Looks like a scam message');
+  });
+
+  it('H-03: "will be debited" alone is a heads-up, not a payment', () => {
+    const p = parseSms(
+      'Your A/c XX4521 will be debited with Rs.1,200.00 on 10-10-26 towards LIC premium.',
+    );
+    expect(p.kind).not.toBe('debit');
+  });
+
+  it("H-03: real alerts with the bank's own link still count", () => {
+    expect(
+      parseSms(
+        'Sent Rs.292.00 from Kotak Bank AC X3344 to q817263542@ybl on 09-06-26.UPI Ref 426721777329. Not you, https://kotak.com/KBANKT/Fraud',
+      ),
+    ).toMatchObject({ kind: 'debit', amount: 29200, last4: '3344' });
+  });
+
+  it('H-02: transfer to your own account names the other account', () => {
+    const p = parseSms(
+      'Sent Rs.40000.00 From HDFC Bank A/C *4521 To Self Kotak Bank XX3344 On 01/10/25 Ref 426700028100 Not You? Call 18002586161/SMS BLOCK UPI to 7308080808',
+    );
+    expect(p).toMatchObject({
+      kind: 'debit',
+      amount: 4000000,
+      last4: '4521',
+      otherLast4: '3344',
+      isSelfTransfer: true,
+    });
+    const q = parseSms(
+      'Rs.25,000.00 transferred from A/c XX4521 to A/c XX3344 on 02-10-26. IMPS Ref 426799991234',
+    );
+    expect(q).toMatchObject({ kind: 'debit', last4: '4521', otherLast4: '3344' });
+  });
+
+  it('H-02: money received names no source → no other account', () => {
+    const p = parseSms(
+      'Received Rs. 40000.00 on 01-10-25 in your Kotak Bank A/C x3344 by an A/C linked to mobile x111. IMPS Ref no 426700099339.',
+    );
+    expect(p).toMatchObject({ kind: 'credit', amount: 4000000, last4: '3344' });
+    expect(p.otherLast4).toBeUndefined();
+  });
+});
+
+describe('payment requests (H-15, seen in the simulator)', () => {
+  it('UPI collect / payment requests are never payments', () => {
+    for (const s of [
+      'Payment request of INR 782.00 from merchant@upi. Ignore if already paid.',
+      'You have received a collect request of Rs. 500 from someone@slc on slice. Approve or decline in the app. - slice',
+      'Rahul has requested money from you on Google Pay. On approving the request, INR 300.00 will be debited from your A/c',
+    ])
+      expect(parseSms(s).kind, s).toBe('ignore');
+  });
+});
