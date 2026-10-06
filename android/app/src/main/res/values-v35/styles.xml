@@ -1,26 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-
-    <!-- Base application theme. -->
-    <style name="AppTheme" parent="Theme.AppCompat.Light.DarkActionBar">
-        <!-- Customize your theme here. -->
-        <item name="colorPrimary">@color/colorPrimary</item>
-        <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
-        <item name="colorAccent">@color/colorAccent</item>
-    </style>
-
+    <!--
+      Android 15+ draws apps under the status bar and gesture bar ("edge-to-edge"). Hisaab's
+      screens aren't laid out for that, so it opts out: the system keeps the bars outside the app
+      (U-05/H-07). Honoured while targetSdk is 35; revisit before moving to 36.
+    -->
     <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
-        <!-- Status and navigation bars in the app's background colour, never over the app (U-05/H-07). -->
         <item name="android:statusBarColor">@color/systemBar</item>
         <item name="android:navigationBarColor">@color/systemBar</item>
         <item name="android:windowLightStatusBar">@bool/lightBars</item>
+        <item name="android:windowLightNavigationBar">@bool/lightBars</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
     </style>
-
 
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
     </style>
 </resources>

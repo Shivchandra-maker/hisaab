@@ -10,7 +10,11 @@ import android.os.Build;
 import android.provider.Settings;
 import android.provider.Telephony;
 
+import android.view.Window;
+
 import androidx.core.app.NotificationManagerCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -40,14 +44,24 @@ import java.util.Set;
  *   getPending() / ack({ids})→ the capture queue filled while the app was closed
  *   setOptions({apps, notify})
  *   takeRoute()              → "inbox" when the app was opened from a capture notification
+ *   requestContacts() / readContacts() → names + phone numbers, to tell friends from shops
+ *   openAppSettings()        → Hisaab's App info page (a permission was blocked with "Don't allow")
+ *   setBars({dark})          → status/navigation bar colours to match the app's theme
  */
 @CapacitorPlugin(
         name = "HisaabCapture",
         permissions = {
             @Permission(strings = {Manifest.permission.RECEIVE_SMS, Manifest.permission.READ_SMS}, alias = "sms"),
-            @Permission(strings = {"android.permission.POST_NOTIFICATIONS"}, alias = "notifications")
+            @Permission(strings = {"android.permission.POST_NOTIFICATIONS"}, alias = "notifications"),
+            @Permission(strings = {Manifest.permission.READ_CONTACTS}, alias = "contacts")
         })
 public class CapturePlugin extends Plugin {
+    /**
+     * Version of this Android part. The web app shows it in Settings and uses it to notice an APK
+     * built without the latest Android files. 3 = contacts, wide filter, detailed notifications.
+     */
+    public static final int NATIVE_VERSION = 3;
+
     private static CapturePlugin instance;
 
     @Override
@@ -80,11 +94,14 @@ public class CapturePlugin extends Plugin {
         o.put("sms", smsGranted());
         o.put("notifications", notificationsGranted());
         o.put("notificationAccess", listenerGranted());
+        o.put("contacts", getPermissionState("contacts") == PermissionState.GRANTED);
         o.put("pending", CaptureStore.all(getContext()).length());
         o.put("notify", CaptureStore.notifyOnCapture(getContext()));
         JSArray apps = new JSArray();
         for (String a : CaptureStore.allowedApps(getContext())) apps.put(a);
         o.put("apps", apps);
+        o.put("nativeVersion", NATIVE_VERSION);
+        o.put("filterVersion", CaptureFilter.VERSION);
         return o;
     }
 
@@ -109,6 +126,83 @@ public class CapturePlugin extends Plugin {
         } else {
             requestPermissionForAlias("notifications", call, "afterPermission");
         }
+    }
+
+    @PluginMethod
+    public void requestContacts(PluginCall call) {
+        if (getPermissionState("contacts") == PermissionState.GRANTED) {
+            call.resolve(statusObject());
+        } else {
+            requestPermissionForAlias("contacts", call, "afterPermission");
+        }
+    }
+
+    /** Every contact's display name and phone numbers (digits only). Stays on the phone. */
+    @PluginMethod
+    public void readContacts(PluginCall call) {
+        if (getPermissionState("contacts") != PermissionState.GRANTED) {
+            call.reject("Contacts permission is not granted");
+            return;
+        }
+        java.util.Map<String, JSArray> byName = new java.util.LinkedHashMap<>();
+        Uri uri = android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI;
+        String[] cols = {
+            android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+            android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER
+        };
+        try (Cursor c = getContext().getContentResolver().query(uri, cols, null, null, null)) {
+            if (c != null) {
+                while (c.moveToNext()) {
+                    String name = c.getString(0);
+                    String number = c.getString(1);
+                    if (name == null || name.trim().isEmpty()) continue;
+                    JSArray phones = byName.get(name);
+                    if (phones == null) {
+                        phones = new JSArray();
+                        byName.put(name, phones);
+                    }
+                    if (number != null) phones.put(number.replaceAll("[^0-9]", ""));
+                }
+            }
+        } catch (Exception e) {
+            call.reject("Could not read contacts: " + e.getMessage());
+            return;
+        }
+        JSArray out = new JSArray();
+        for (java.util.Map.Entry<String, JSArray> e : byName.entrySet()) {
+            JSObject o = new JSObject();
+            o.put("name", e.getKey());
+            o.put("phones", e.getValue());
+            out.put(o);
+        }
+        JSObject res = new JSObject();
+        res.put("contacts", out);
+        call.resolve(res);
+    }
+
+    @PluginMethod
+    public void openAppSettings(PluginCall call) {
+        Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", getContext().getPackageName(), null));
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        getContext().startActivity(i);
+        call.resolve();
+    }
+
+    @PluginMethod
+    @SuppressWarnings("deprecation") // bar colours still apply: the app opts out of edge-to-edge
+    public void setBars(PluginCall call) {
+        boolean dark = Boolean.TRUE.equals(call.getBoolean("dark", false));
+        getActivity().runOnUiThread(() -> {
+            Window w = getActivity().getWindow();
+            int color = dark ? 0xFF0E1412 : 0xFFF6F8F7; // tokens.css --bg
+            w.setStatusBarColor(color);
+            w.setNavigationBarColor(color);
+            WindowInsetsControllerCompat c = WindowCompat.getInsetsController(w, w.getDecorView());
+            c.setAppearanceLightStatusBars(!dark);
+            c.setAppearanceLightNavigationBars(!dark);
+        });
+        call.resolve();
     }
 
     @PermissionCallback

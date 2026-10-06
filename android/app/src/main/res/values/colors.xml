@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Behind the status bar and the navigation bar: the app's own background (tokens.css --bg). -->
+    <color name="systemBar">#F6F8F7</color>
+</resources>

@@ -13,14 +13,14 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
 
-/** "New payment · ₹250 — tap to review" after a bank SMS is captured. */
+/** "₹250 to Swiggy · HDFC Bank ••4521" the moment a bank SMS is captured. */
 public final class CaptureNotifier {
     private static final String CHANNEL = "captures";
     private static final int ID = 7001;
 
     private CaptureNotifier() {}
 
-    public static void show(Context ctx, String body) {
+    public static void show(Context ctx, String sender, String body) {
         if (!CaptureStore.notifyOnCapture(ctx)) return;
         if (Build.VERSION.SDK_INT >= 33
                 && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS)
@@ -38,16 +38,21 @@ public final class CaptureNotifier {
         }
         Intent open = new Intent(ctx, MainActivity.class);
         open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        open.putExtra("route", "inbox");
+        open.putExtra("route", "transactions");
         PendingIntent pi = PendingIntent.getActivity(
                 ctx, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
+        PaymentSummary.Summary sum = PaymentSummary.describe(sender, body);
         String amount = CaptureFilter.amountLabel(body);
+        String title = sum != null ? sum.title : amount.isEmpty() ? "New payment" : "New payment · " + amount;
+        String text = sum != null ? sum.text : "Tap to see it in Hisaab";
         int waiting = CaptureStore.all(ctx).length();
         NotificationCompat.Builder b = new NotificationCompat.Builder(ctx, CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat_hisaab)
-                .setContentTitle(amount.isEmpty() ? "New payment message" : "New payment · " + amount)
-                .setContentText(waiting > 1 ? waiting + " messages waiting — tap to review" : "Tap to review in Hisaab")
+                .setContentTitle(title)
+                .setContentText(text)
+                .setSubText(waiting > 1 ? waiting + " new" : null)
+                .setShowWhen(true)
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
