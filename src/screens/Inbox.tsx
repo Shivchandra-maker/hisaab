@@ -18,7 +18,6 @@ import {
   addAllReady,
   addFromInbox,
   clearHandled,
-  dismissNotice,
   ignoreInboxItem,
   ingestMessages,
   personKey,
@@ -26,7 +25,9 @@ import {
   type IngestSummary,
 } from '../db/inbox';
 import { needsDupCheck, useStore } from '../store';
-import { Capture, isAndroidApp, requestContacts } from '../native/capture';
+import { foundAccountName } from '../db/needs';
+import { Capture, isAndroidApp } from '../native/capture';
+import { ContactsAllow } from './ContactsAllow';
 import { refreshCheckpoints } from '../db/checkpoints';
 import { useUI } from '../ui';
 
@@ -60,7 +61,7 @@ export function Inbox() {
 
   // D-01: the same grouping (and the same count) the badge and Home banner use.
   const { people, groups, dups, other, ready, suggestions, count: needYou } = needs;
-  const notices = inbox.filter((i) => i.status === 'notice');
+  // Autopay and EMI notices aren't payments: kept for the coming autopay tracking, not shown (U-14).
   const handled = inbox.filter(
     (i) =>
       i.status === 'added' ||
@@ -194,23 +195,6 @@ export function Inbox() {
         </div>
       </details>
 
-      {notices.length > 0 && (
-        <details className="panel">
-          <summary className="row fold" style={{ cursor: 'pointer' }}>
-            <b>Autopay & EMI notices ({notices.length})</b>
-            <Icon name="chevdown" size={16} className="fold-chev" />
-          </summary>
-          <p className="faint" style={{ margin: '8px 0', fontSize: 'var(--fs-sm)' }}>
-            These aren’t payments yet. Autopay and EMI tracking will use them in the coming phases.
-          </p>
-          <div className="list">
-            {notices.map((i) => (
-              <NoticeRow key={i.id} item={i} />
-            ))}
-          </div>
-        </details>
-      )}
-
       {handled.length > 0 && (
         <details className="panel">
           <summary className="row fold" style={{ cursor: 'pointer' }}>
@@ -254,7 +238,6 @@ export function Inbox() {
 /** "Spent or lent?" for a payment to (or from) a person. Changes that transaction; never adds one. */
 /** Ask for contacts once: with them we only ask about friends, never shops. */
 function ContactsPrompt() {
-  const { toast } = useUI();
   const [granted, setGranted] = useState<boolean | null>(null);
   useEffect(() => {
     void Capture.status()
@@ -269,18 +252,7 @@ function ContactsPrompt() {
         Allow contacts and Hisaab only asks “Spent or lent?” for people you know — never for shops.
         Contacts are read on this phone and never leave it.
       </p>
-      <div>
-        <button
-          className="btn btn-primary"
-          onClick={async () => {
-            const ok = await requestContacts();
-            setGranted(ok);
-            toast(ok ? 'Contacts allowed' : 'Without contacts, Hisaab won’t ask about loans');
-          }}
-        >
-          Allow contacts
-        </button>
-      </div>
+      <ContactsAllow onGranted={() => setGranted(true)} />
     </article>
   );
 }
@@ -453,10 +425,7 @@ function NewAccountCard({ items }: { items: InboxItem[] }) {
   const since = items.map((i) => i.parsed.date ?? i.receivedAt).sort()[0]!;
   const isCard = p.instrument === 'credit_card' || p.kind === 'card_payment';
   const isWallet = p.instrument === 'wallet' || p.instrument === 'upi_lite';
-  const bank = p.bank?.replace(/ Bank$/, '');
-  const name = isWallet
-    ? `${p.walletName ?? 'UPI Lite'}${p.walletName ? ' wallet' : ''}`
-    : `${bank ? `${bank} ` : ''}${isCard ? 'Credit Card' : p.instrument === 'debit_card' ? 'Debit Card' : 'Bank'}${p.last4 ? ` ••${p.last4}` : ''}`;
+  const name = foundAccountName(p);
   return (
     <article className="panel needs-card">
       <div className="needs-label is-account">New account found</div>
@@ -855,36 +824,5 @@ function ReviewCard({
         </button>
       </div>
     </article>
-  );
-}
-
-function NoticeRow({ item }: { item: InboxItem }) {
-  const p = item.parsed;
-  const bits = [
-    p.merchant,
-    p.amount !== undefined && formatINR(p.amount),
-    p.kind === 'emi_notice' &&
-      p.emiMonths &&
-      `${p.emiMonths} EMIs${p.emiAmount ? ` of ${formatINR(p.emiAmount)}` : ''}`,
-    p.scheduledDate && `on ${formatDate(p.scheduledDate)}`,
-    p.frequency,
-    p.last4 && `•• ${p.last4}`,
-  ].filter(Boolean);
-  return (
-    <div className="item">
-      <span
-        className="avatar avatar-sm"
-        style={{ background: 'var(--surface-2)', color: 'var(--fg-2)' }}
-      >
-        <Icon name={p.kind === 'emi_notice' ? 'calendar' : 'repeat'} size={15} />
-      </span>
-      <div className="item-main">
-        <div className="item-title">{item.note}</div>
-        <div className="item-sub">{bits.join(' · ')}</div>
-      </div>
-      <button className="btn" onClick={() => dismissNotice(item.id)}>
-        Dismiss
-      </button>
-    </div>
   );
 }

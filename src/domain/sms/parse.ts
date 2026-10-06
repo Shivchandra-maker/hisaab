@@ -42,6 +42,8 @@ export interface ParsedSms {
   balanceIsLimit?: boolean;
   /** Transaction date found in the text (IST). */
   date?: ISODate;
+  /** Time of day in the text ("HH:mm", IST), e.g. "13-09-25 21:35:56", "at 01:28 PM". */
+  time?: string;
   /** Bank or issuer named in the text, e.g. "HDFC Bank". */
   bank?: string;
   mode?: 'upi' | 'card' | 'netbanking' | 'atm' | 'auto_debit' | 'other';
@@ -74,7 +76,7 @@ export interface ParsedSms {
 }
 
 /** Bump when parsing changes, so messages already in the Inbox are read again with the new rules. */
-export const PARSER_VERSION = 5;
+export const PARSER_VERSION = 7;
 
 /* ───────────────────────── helpers ───────────────────────── */
 
@@ -149,6 +151,21 @@ export function findDate(text: string): ISODate | undefined {
   m = text.match(/\b(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})\b/); // 28/09/26, 28-09-2026
   if (m) return validDate(+m[3]!, +m[2]!, +m[1]!);
   return undefined;
+}
+
+/** Time of day in the alert, as "HH:mm". */
+export function findTime(text: string): string | undefined {
+  // HDFC cards: "On 2025-10-13:22:29:42"
+  let m = text.match(/\b20\d{2}-\d{2}-\d{2}[:\sT]+(\d{2}):(\d{2})(?::\d{2})?\b/);
+  if (!m) m = text.match(/\b(\d{1,2}):(\d{2})(?::\d{2})?\s*(am|pm)?\b/i);
+  if (!m) return undefined;
+  let h = Number(m[1]);
+  const min = Number(m[2]);
+  const ap = m[3]?.toLowerCase();
+  if (ap === 'pm' && h < 12) h += 12;
+  if (ap === 'am' && h === 12) h = 0;
+  if (h > 23 || min > 59) return undefined;
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
 }
 
 function findLast4(text: string): { last4?: string; instrument: Instrument } {
@@ -530,7 +547,18 @@ export function parseSms(input: string): ParsedSms {
     ) &&
     !/\b(offer|apply|eligible|pre-?approved|loan of|upgrade)\b/i.test(flat)
   ) {
-    const b = findBalance(flat);
+    let b = findBalance(flat);
+    if (b.balance === undefined) {
+      // Balance-enquiry replies put words between "balance" and the amount:
+      // "Available Bal in HDFC Bank A/c XX4521 as on 06-OCT-26 INR 2,71,534.00" (U-11).
+      const m = flat.match(
+        new RegExp(
+          String.raw`\b(?:avl\.?|available|avail\.?|clear|total)?\s*(bal(?:ance)?|lmt|limit)\b.{0,70}?${AMOUNT}`,
+          'i',
+        ),
+      );
+      if (m) b = { balance: toPaise(m[2]!), isLimit: /lmt|limit/i.test(m[1]!) };
+    }
     if (b.balance !== undefined) {
       const { last4, instrument } = findLast4(flat);
       return {
@@ -584,6 +612,7 @@ export function parseSms(input: string): ParsedSms {
       last4: found.last4,
       bank,
       date,
+      time: findTime(flat),
       ref,
       mode: 'other',
       confidence: found.last4 ? 0.85 : 0.6,
@@ -655,6 +684,7 @@ export function parseSms(input: string): ParsedSms {
     last4,
     bank,
     date,
+    time: findTime(flat),
     ref,
     balance,
     balanceIsLimit: isLimit,

@@ -1,5 +1,7 @@
+import type React from 'react';
 import { useState } from 'react';
 import {
+  BackLink,
   ConfirmButton,
   EmptyState,
   ErrorNote,
@@ -10,7 +12,6 @@ import {
   Segmented,
   Sheet,
 } from '../design/components';
-import { Icon } from '../design/Icon';
 import { formatDate } from '../domain/dates';
 import { counted, debtBalance } from '../domain/ledger';
 import { formatINR, toPaise } from '../domain/money';
@@ -42,38 +43,25 @@ export function People() {
 
   return (
     <div className="page">
+      <BackLink label="More" phoneOnly onClick={() => go('settings')} />
       <div className="page-head">
-        <div className="row">
-          <button
-            className="icon-btn phone-only-flex"
-            onClick={() => go('settings')}
-            aria-label="Back"
-          >
-            <Icon name="left" size={18} />
-          </button>
-          <h1>Lent &amp; borrowed</h1>
-        </div>
+        <h1>Lent &amp; borrowed</h1>
         <button className="btn btn-primary" onClick={() => setAdding(true)}>
           Add
         </button>
       </div>
-      <div className="grid-2">
-        <div className="panel">
+      <section className="panel summary-strip summary-2" aria-label="Lent and borrowed">
+        <div>
           <div className="label">Owed to you</div>
-          <div
-            className="num"
-            style={{ fontSize: 'var(--fs-xl)', fontWeight: 600, color: 'var(--accent)' }}
-          >
+          <div className="num v" style={{ color: 'var(--accent)' }}>
             {formatINR(owedToYou)}
           </div>
         </div>
-        <div className="panel">
+        <div>
           <div className="label">You owe</div>
-          <div className="num" style={{ fontSize: 'var(--fs-xl)', fontWeight: 600 }}>
-            {formatINR(youOwe)}
-          </div>
+          <div className="num v">{formatINR(youOwe)}</div>
         </div>
-      </div>
+      </section>
       <Segmented
         label="Show"
         value={show}
@@ -106,11 +94,14 @@ export function People() {
                   onClick={() => setOpenId(open ? null : d.id)}
                   aria-expanded={open}
                 >
+                  {/* D-06: tinted tile, coloured initial (same as category avatars). */}
                   <span
                     className="avatar"
-                    style={{
-                      background: d.direction === 'lent' ? 'var(--accent)' : 'var(--cat-6)',
-                    }}
+                    style={
+                      {
+                        '--c': d.direction === 'lent' ? 'var(--accent)' : 'var(--cat-6)',
+                      } as React.CSSProperties
+                    }
                   >
                     {d.person.slice(0, 1).toUpperCase()}
                   </span>
@@ -128,7 +119,8 @@ export function People() {
                     {b.repaid > 0 && <div className="item-sub">of {formatINR(b.principal)}</div>}
                   </div>
                 </button>
-                {b.principal > 0 && (
+                {/* Only once something has been paid back — an empty bar says nothing. */}
+                {b.principal > 0 && b.repaid > 0 && !d.settledAt && (
                   <div style={{ marginTop: 8 }}>
                     <Progress value={b.repaid / b.principal} thin />
                   </div>

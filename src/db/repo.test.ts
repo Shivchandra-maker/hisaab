@@ -298,3 +298,48 @@ describe('backup', () => {
     await expect(importBackup('nope')).rejects.toThrow('valid JSON');
   });
 });
+
+describe('time of day on entries made in the app (U-15)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-07T21:05:00+05:30'));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('balance corrections, loans and repayments made today get the current time', async () => {
+    const adj = await adjustBalance(bank.id, 49_000_00, '2026-10-07');
+    expect(adj?.time).toBe('21:05');
+    const debt = await startDebt({
+      person: 'Priya',
+      direction: 'lent',
+      amount: 500_00,
+      accountId: bank.id,
+      date: '2026-10-07',
+    });
+    const rows = (await db.transactions.toArray()).filter((t) => t.debtId === debt.id);
+    expect(rows[0]?.time).toBe('21:05');
+    const back = await recordDebtMovement({
+      debtId: debt.id,
+      type: 'repayment',
+      amount: 200_00,
+      accountId: bank.id,
+      date: '2026-10-07',
+    });
+    expect(back.time).toBe('21:05');
+  });
+
+  it('an earlier day gets no made-up time; a time you set (or cleared) is kept', async () => {
+    const adj = await adjustBalance(bank.id, 49_000_00, '2026-10-01');
+    expect(adj?.time).toBeUndefined();
+    const t = await saveTransaction({
+      ...base,
+      kind: 'expense',
+      amount: 100_00,
+      date: '2026-10-07',
+      accountId: bank.id,
+      categoryId: 'food',
+      time: undefined,
+    });
+    expect(t.time).toBeUndefined();
+  });
+});

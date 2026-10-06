@@ -51,8 +51,6 @@ export function Accounts() {
         </div>
       </section>
 
-      <PeopleSummary />
-
       {cards.length > 0 && (
         <Panel title="Credit cards">
           <div className="list">
@@ -123,6 +121,8 @@ export function Accounts() {
             </Panel>
           ))}
       </div>
+      {/* D-07: your own accounts first; money with friends after. */}
+      <PeopleSummary />
       {accounts.length === 0 && (
         <section className="panel">
           <EmptyState

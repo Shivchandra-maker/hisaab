@@ -64,6 +64,8 @@ export interface Account extends Syncable {
   last4?: string;
   /** UPI IDs (VPAs) linked to this account. */
   upiIds?: string[];
+  /** Your own numbers for asking this bank the balance (overrides domain/bankContacts.ts). */
+  balanceCheck?: { sms?: string; text?: string; call?: string };
   /**
    * Balance on `openingDate`.
    * Asset accounts: money in the account. Credit cards: amount owed (positive = you owe).
@@ -133,6 +135,8 @@ export interface Transaction extends Syncable {
   kind: TxnKind;
   /** Day the money actually moved (IST). Drives all calendar-month reports. */
   date: ISODate;
+  /** Time of day it moved (IST, "HH:mm"), when known: from the message, or when you added it. */
+  time?: string;
   /** Always positive. Direction comes from `kind`. */
   amount: Paise;
   /** Source account for expense/transfer, destination for income/refund. */
@@ -162,6 +166,13 @@ export interface Transaction extends Syncable {
   externalRef?: string;
   /** Original SMS/email text for auto-captured transactions. */
   rawText?: string;
+  /**
+   * Paid for others: the full amount that left your account. `amount` is then only your share;
+   * the rest became money lent (debt rows with `splitOf` = this id).
+   */
+  grossAmount?: Paise;
+  /** Debt rows only: the payment this lent share came out of ("paid for Priya at Croma"). */
+  splitOf?: ID;
   /**
    * Captured payment to/from a contact: true = waiting for "Spent, lent or paid back?",
    * false = answered (never ask again). Counted as spending/income until answered.

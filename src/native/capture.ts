@@ -28,7 +28,14 @@ export interface CaptureStatus {
   notify: boolean;
   apps: string[];
   contacts?: boolean;
+  /** Version of the Android part (CapturePlugin.NATIVE_VERSION); missing on APKs before 3. */
+  nativeVersion?: number;
+  /** CaptureFilter.VERSION; missing before 2. */
+  filterVersion?: number;
 }
+
+/** The Android part this web code expects. Older = the APK was built without the latest android/ files. */
+export const EXPECTED_NATIVE_VERSION = 3;
 
 interface HisaabCapturePlugin {
   status(): Promise<CaptureStatus>;
@@ -42,6 +49,8 @@ interface HisaabCapturePlugin {
   takeRoute(): Promise<{ route: string }>;
   requestContacts(): Promise<CaptureStatus>;
   readContacts(): Promise<{ contacts: Contact[] }>;
+  openAppSettings(): Promise<void>;
+  setBars(opts: { dark: boolean }): Promise<void>;
   addListener(event: 'captured', fn: () => void): Promise<PluginListenerHandle>;
 }
 
@@ -89,11 +98,37 @@ export async function loadContacts(): Promise<boolean> {
   }
 }
 
-export async function requestContacts(): Promise<boolean> {
-  if (!isAndroidApp) return false;
-  const st = await Capture.requestContacts();
-  if (st.contacts) await loadContacts();
-  return !!st.contacts;
+/**
+ * Ask for contacts. `blocked` = Android won't show the dialog any more (you chose "Don't allow"
+ * before): only App info → Permissions can turn it on. `update` = this APK's Android part is too
+ * old to ask at all.
+ */
+export type ContactsResult = 'granted' | 'denied' | 'blocked' | 'update';
+
+export async function requestContacts(): Promise<ContactsResult> {
+  if (!isAndroidApp) return 'denied';
+  try {
+    const before = await Capture.status();
+    if ((before.nativeVersion ?? 0) < EXPECTED_NATIVE_VERSION && before.contacts === undefined)
+      return 'update';
+    const t0 = Date.now();
+    const st = await Capture.requestContacts();
+    if (st.contacts) {
+      await loadContacts();
+      return 'granted';
+    }
+    // An answer faster than a person can tap means Android didn't show the dialog at all.
+    return Date.now() - t0 < 400 ? 'blocked' : 'denied';
+  } catch {
+    return 'update';
+  }
+}
+
+export const openAppSettings = () => Capture.openAppSettings().catch(() => undefined);
+
+/** Status and navigation bars follow the app's own light/dark theme. */
+export function setSystemBars(dark: boolean) {
+  if (isAndroidApp) void Capture.setBars({ dark }).catch(() => undefined);
 }
 
 /**
@@ -122,13 +157,17 @@ export async function catchUp(days = 3): Promise<number> {
  */
 export async function rescanAfterFilterUpgrade(): Promise<number> {
   if (!isAndroidApp) return 0;
-  if ((await getMeta<number>('captureFilterVersion', 1)) >= CAPTURE_FILTER_VERSION) return 0;
+  // Keyed on the filter the phone actually runs: an APK built without the new android/ files
+  // still has the old filter, and re-reading through it would miss the same messages again.
+  const st = await Capture.status();
+  const native = st.filterVersion ?? 1;
+  if (native < CAPTURE_FILTER_VERSION) return 0;
+  if ((await getMeta<number>('nativeFilterRead', 1)) >= native) return 0;
   await reparseInboxIfNeeded(); // apply the new parser to what's already filed first
   if (!(await getMeta<boolean>('quickSetupDone', false))) {
-    await setMeta('captureFilterVersion', CAPTURE_FILTER_VERSION);
+    await setMeta('nativeFilterRead', native);
     return 0;
   }
-  const st = await Capture.status();
   if (!st.sms) return 0; // try again once SMS is allowed
   const { messages } = await Capture.readInbox({ sinceMs: Date.now() - 180 * DAY, limit: 20_000 });
   const sorted = [...messages].sort((a, b) => a.ts - b.ts);
@@ -139,7 +178,7 @@ export async function rescanAfterFilterUpgrade(): Promise<number> {
   }
   if (await getMeta<boolean>('autoAdd', true)) await addAllReady();
   await refreshCheckpoints();
-  await setMeta('captureFilterVersion', CAPTURE_FILTER_VERSION);
+  await setMeta('nativeFilterRead', native);
   return fresh;
 }
 

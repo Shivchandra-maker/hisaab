@@ -47,6 +47,8 @@ h3 {
   font-family: var(--font-display);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
+  /* D-17: a sign or ₹ never splits from its number, even at large text sizes. */
+  white-space: nowrap;
 }
 .muted {
   color: var(--fg-2);
@@ -771,6 +773,9 @@ button.item:hover .item-title {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: flex-start;
+  /* D-10: every tile the same height, labels up to two lines. */
+  min-height: 76px;
   gap: 6px;
   font-size: 11.5px;
   font-weight: 500;
@@ -1893,4 +1898,403 @@ summary.fold .fold-chev {
 }
 details[open] > summary.fold .fold-chev {
   transform: rotate(180deg);
+}
+
+/* U-21: Paid for others — names as chips, suggestions from contacts. */
+.pfo-who {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: relative;
+}
+.pfo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 48px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+.pfo-chips:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.pfo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.pfo-chip button {
+  border: 0;
+  background: none;
+  color: inherit;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.pfo-input {
+  flex: 1 1 120px;
+  min-width: 100px;
+  border: 0;
+  outline: 0;
+  background: none;
+  font: inherit;
+  font-size: var(--fs-md);
+  color: var(--fg);
+  min-height: 36px;
+}
+.pfo-suggest {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  overflow: hidden;
+}
+.pfo-suggest button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: none;
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.pfo-suggest button:first-child {
+  border-top: 0;
+}
+.pfo-suggest button:hover,
+.pfo-suggest button:focus-visible {
+  background: var(--surface-2);
+}
+.pfo-amt {
+  width: 110px;
+  text-align: right;
+}
+
+/* U-18: recorded, but not your spending — quieter, never hidden. */
+.item.is-faded > :not(.item-amt),
+.item.is-faded .item-amt > :first-child {
+  opacity: 0.5;
+}
+.item-amt {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+.item-tag {
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+  font-weight: 500;
+}
+
+/* On/off switch built on a checkbox (keeps keyboard and screen-reader behaviour). */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  min-height: 48px;
+  cursor: pointer;
+}
+input.switch {
+  appearance: none;
+  flex: none;
+  width: 46px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--line);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s var(--ease);
+  margin: 0;
+}
+input.switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+  transition: transform 0.15s var(--ease);
+}
+input.switch:checked {
+  background: var(--accent);
+}
+input.switch:checked::after {
+  transform: translateX(18px);
+}
+input.switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Tappable bars (Insights daily chart). */
+.chart .hit {
+  fill: transparent;
+}
+.chart .bar-btn {
+  cursor: pointer;
+  outline: none;
+}
+.chart .bar-btn:focus-visible .hit {
+  fill: var(--accent-soft);
+}
+.chart .b.dim {
+  opacity: 0.55;
+}
+.chart .b.sel {
+  fill: var(--accent-strong);
+  opacity: 1;
+  stroke: var(--fg);
+  stroke-width: 1.5;
+}
+
+/* Insights rows open their payments (U-20). */
+button.drill {
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+  padding: 6px 0;
+  min-height: 44px;
+  cursor: pointer;
+  border-radius: var(--r-sm);
+}
+button.drill:hover {
+  background: var(--surface-2);
+}
+button.drill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button.drill.cat-row {
+  display: flex;
+  align-items: center;
+}
+.chart-legend {
+  gap: var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--fg-2);
+  flex-wrap: wrap;
+}
+.chart-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.lg-box {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+.lg-box.lg-dim {
+  opacity: 0.55;
+}
+
+/* Links styled as buttons (Send SMS / Missed call). */
+a.btn {
+  text-decoration: none;
+  color: var(--fg);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+a.btn.btn-primary {
+  color: var(--on-accent);
+}
+
+/* D-13: tall one-off days drawn cut off at the top of the daily chart. */
+.chart .cut {
+  stroke: var(--surface);
+  stroke-width: 2.5;
+  fill: none;
+}
+.chart-foot {
+  margin: 0;
+  font-size: var(--fs-xs);
+}
+
+/* D-14: sideways chip rows fade where more chips are hidden; the chosen one is named in the label. */
+.chips.scroll.fade-r {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
+.chips.scroll.fade-l {
+  -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent);
+}
+.chips.scroll.fade-l.fade-r {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 32px,
+    #000 calc(100% - 32px),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 32px,
+    #000 calc(100% - 32px),
+    transparent
+  );
+}
+.label-value {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--fg-2);
+  font-weight: 600;
+}
+
+/* D-16: "check with your bank" as one quiet row under the balance. */
+.ask-row {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-2);
+  background: var(--surface);
+}
+.ask-row.is-stale {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+  background: var(--warn-soft);
+}
+.ask-status {
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+}
+.is-stale .ask-status {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* D-15: back is a labelled link above the title, not a second round "‹" button. */
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  align-self: flex-start;
+  border: 0;
+  background: none;
+  padding: 8px 6px 0 0;
+  margin-bottom: calc(var(--sp-3) * -1);
+  min-height: 36px;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+}
+.nowrap {
+  white-space: nowrap;
+}
+
+/* D-09: backup panel */
+.storage-note {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.storage-note > span {
+  flex: 1 1 200px;
+}
+.backup-actions {
+  gap: var(--sp-2);
+}
+.backup-actions > .btn {
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+@media (min-width: 761px) {
+  .backup-actions > .btn {
+    flex: 0 0 auto;
+  }
+}
+.summary-strip.summary-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* D-07: on phones "Free to spend" (have − card dues) gets its own row, as the result. */
+@media (max-width: 520px) {
+  .summary-strip:not(.summary-2) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: var(--sp-3);
+  }
+  .summary-strip:not(.summary-2) > div:nth-child(3) {
+    grid-column: 1 / -1;
+    border-left: 0;
+    padding-left: 0;
+    border-top: 1px solid var(--line);
+    padding-top: var(--sp-3);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .summary-strip:not(.summary-2) > div:nth-child(3) .v {
+    font-size: var(--fs-lg);
+  }
+}
+
+/* D-08: card detail */
+.tl-axis {
+  position: relative;
+}
+.tl-today-label {
+  position: absolute;
+  transform: translateX(-50%);
+  color: var(--fg);
+  font-weight: 600;
+}
+.item-sub.wrap {
+  white-space: normal;
+}
+.stmt-amt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+/* D-17: on narrow screens and large text, a panel's note goes under its title instead of
+   squeezing it to three lines. */
+@media (max-width: 420px) {
+  .panel-head {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+  .panel-head > .panel-note {
+    order: 3;
+    flex-basis: 100%;
+  }
+}
+/* Hero stats wrap 2 + 1 rather than shrinking when text is large. */
+@media (max-width: 760px) {
+  .hero-stats {
+    grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr));
+  }
 }

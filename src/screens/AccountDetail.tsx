@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
-import { AccountAvatar, EmptyState, Panel } from '../design/components';
-import { Icon } from '../design/Icon';
+import { AccountAvatar, BackLink, EmptyState, Panel } from '../design/components';
 import { formatDate } from '../domain/dates';
 import { assetDelta, balanceOf, counted } from '../domain/ledger';
 import { formatINR } from '../domain/money';
@@ -9,11 +8,12 @@ import { useUI } from '../ui';
 import { AdjustSheet } from './AccountSheet';
 import { TxnRow } from './TxnRow';
 import { BankCheck } from './BankCheck';
+import { BalanceAsk } from './BalanceAsk';
 
 /** Register for a bank, cash or wallet account: balance, running balance per day. */
 export function AccountDetail({ id }: { id: string }) {
   const { accountById, transactions, today } = useStore();
-  const { go, openAccount, openTxn } = useUI();
+  const { go, openAccount } = useUI();
   const [adjusting, setAdjusting] = useState(false);
   const [limit, setLimit] = useState(60);
   const acc = accountById.get(id);
@@ -51,26 +51,16 @@ export function AccountDetail({ id }: { id: string }) {
 
   return (
     <div className="page">
+      <BackLink label="Accounts" onClick={() => go('accounts')} />
       <div className="page-head">
         <div className="row">
-          <button className="icon-btn" onClick={() => go('accounts')} aria-label="Back to accounts">
-            <Icon name="left" size={18} />
-          </button>
           <AccountAvatar account={acc} small />
           <h1>{acc.name}</h1>
           {acc.archived && <span className="pill pill-neutral">Archived</span>}
         </div>
-        <div className="row">
-          <button className="btn" onClick={() => openAccount(acc)}>
-            Edit
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => openTxn({ kind: 'expense', accountId: id })}
-          >
-            Add
-          </button>
-        </div>
+        <button className="btn" onClick={() => openAccount(acc)}>
+          Edit
+        </button>
       </div>
 
       <section className="hero">
@@ -82,11 +72,16 @@ export function AccountDetail({ id }: { id: string }) {
               .filter(Boolean)
               .join(' · ') || (acc.kind === 'cash' ? 'Cash in hand' : 'Wallet')}
           </span>
-          <button className="btn btn-ghost" onClick={() => setAdjusting(true)}>
-            Doesn’t match? Update balance
-          </button>
         </div>
         <BankCheck account={acc} />
+        <BalanceAsk account={acc} today={today} />
+        <button
+          className="link-btn"
+          style={{ alignSelf: 'flex-start' }}
+          onClick={() => setAdjusting(true)}
+        >
+          Balance wrong? Set it by hand
+        </button>
       </section>
 
       <Panel title="Activity">

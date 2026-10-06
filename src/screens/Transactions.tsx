@@ -103,7 +103,7 @@ export function Transactions({
       {count > 0 && (
         <div className="list-summary">
           <span>
-            {count} transaction{count === 1 ? '' : 's'}
+            {count} payment{count === 1 ? '' : 's'}
             {filtered ? (count === 1 ? ' matches' : ' match') : ''}
           </span>
           {net !== 0 && (

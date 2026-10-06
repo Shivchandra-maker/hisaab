@@ -1,5 +1,4 @@
-import { Icon } from '../design/Icon';
-import { Panel, Progress, StatusPill } from '../design/components';
+import { BackLink, Panel, StatusPill } from '../design/components';
 import { BankCheck } from './BankCheck';
 import { periodClosingIn, recentPeriods, type StatementPeriod } from '../domain/cycle';
 import {
@@ -75,9 +74,15 @@ function PeriodTimeline({
         )}
         <div className="tl-today" style={{ left: `${pos(today)}%` }} />
       </div>
+      {/* D-08: "Today" sits under the today line, not in the middle whatever the date. */}
       <div className="tl-axis">
         <span>{formatDate(w0)}</span>
-        <span>Today</span>
+        <span
+          className="tl-today-label"
+          style={{ left: `${Math.min(88, Math.max(12, pos(today)))}%` }}
+        >
+          Today
+        </span>
         <span>{formatDate(w1)}</span>
       </div>
     </div>
@@ -105,11 +110,9 @@ export function CardDetail({ id }: { id: string }) {
 
   return (
     <div className="page">
+      <BackLink label="Accounts" onClick={() => go('accounts')} />
       <div className="page-head">
         <div className="row">
-          <button className="icon-btn" onClick={() => go('accounts')} aria-label="Back to accounts">
-            <Icon name="left" size={18} />
-          </button>
           <h1>{card.name}</h1>
           {card.last4 && <span className="faint">•• {card.last4}</span>}
         </div>
@@ -205,38 +208,43 @@ export function CardDetail({ id }: { id: string }) {
         <div className="list">
           {statements.map((st) => (
             <div key={st.period.closesIn} className="item">
+              {/* D-08: one amount per statement — the bill (or what's built up so far). */}
               <div className="item-main">
                 <div className="item-title">{formatMonth(st.period.closesIn)}</div>
-                <div className="item-sub">
-                  {formatDate(st.period.start)} – {formatDate(st.period.end)} · due{' '}
-                  {formatDate(st.period.due)}
+                <div className="item-sub wrap">
+                  {formatDate(st.period.start)} – {formatDate(st.period.end)}
+                </div>
+                <div className="item-sub wrap">
+                  {st.status === 'open'
+                    ? `Closes ${formatDate(st.period.end)}`
+                    : st.remaining > 0
+                      ? `${formatINR(st.remaining)} left · due ${formatDate(st.period.due)}`
+                      : `Due ${formatDate(st.period.due)}`}
                 </div>
               </div>
-              <StatusPill status={st.status} />
-              <div className="item-amt" style={{ minWidth: '6.5em' }}>
+              <div className="item-amt stmt-amt">
                 <div className="num">
                   {formatINR(st.status === 'open' ? s.unbilled : st.totalDue)}
                 </div>
-                <div className="item-sub">
-                  {st.status === 'open'
-                    ? 'so far'
-                    : st.remaining > 0
-                      ? `${formatINR(st.remaining)} left`
-                      : `charges ${formatINR(st.charges)}`}
-                </div>
+                <StatusPill status={st.status}>
+                  {st.status === 'open' ? 'So far' : undefined}
+                </StatusPill>
               </div>
             </div>
           ))}
         </div>
       </Panel>
 
-      <Panel title={`Unbilled spending (${unbilledTxns.length})`}>
-        <Progress
-          value={s.unbilled / Math.max(1, card.card.creditLimit)}
-          color="var(--cycle)"
-          thin
-        />
-        <div className="list" style={{ marginTop: 8 }}>
+      <Panel
+        title="Unbilled"
+        action={
+          <span className="faint panel-note">
+            {formatINR(s.unbilled)} · {unbilledTxns.length} payment
+            {unbilledTxns.length === 1 ? '' : 's'}
+          </span>
+        }
+      >
+        <div className="list">
           {unbilledTxns.map((t) => (
             <TxnRow key={t.id} t={t} />
           ))}

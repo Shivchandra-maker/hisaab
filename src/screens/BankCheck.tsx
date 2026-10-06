@@ -16,14 +16,23 @@ export function BankCheck({ account }: { account: Account }) {
   const [error, setError] = useState('');
 
   // Cards: the SMS gives the available limit; with the credit limit we know exactly what's owed.
-  if (card && !account.card?.creditLimit && account.lastAvailable)
+  // Every card without a limit asks for it — not only those whose SMS state the available limit
+  // (U-13: one of four cards never showed the prompt).
+  if (card && !account.card?.creditLimit)
     return (
       <div className="note note-cycle stack" style={{ gap: 'var(--sp-2)' }}>
-        <span>
-          Your bank said <b>{formatINR(account.lastAvailable.amount)}</b> available on{' '}
-          {formatDate(account.lastAvailable.date)}. Add this card’s credit limit and Hisaab will
-          match what the bank says you owe — every time a message arrives.
-        </span>
+        {account.lastAvailable ? (
+          <span>
+            Your bank said <b>{formatINR(account.lastAvailable.amount)}</b> available on{' '}
+            {formatDate(account.lastAvailable.date)}. Add this card’s credit limit and Hisaab will
+            match what the bank says you owe — every time a message arrives.
+          </span>
+        ) : (
+          <span>
+            Add this card’s credit limit to see how much of it you’ve used. If the bank’s messages
+            mention the available limit, Hisaab will also match what you owe to them.
+          </span>
+        )}
         <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
           <label className="sr-only" htmlFor={`lim-${account.id}`}>
             Credit limit
@@ -44,7 +53,7 @@ export function BankCheck({ account }: { account: Account }) {
               try {
                 setError('');
                 const v = toPaise(limit);
-                if (v < account.lastAvailable!.amount)
+                if (account.lastAvailable && v < account.lastAvailable.amount)
                   throw new Error('The limit can’t be less than what’s available.');
                 await saveAccount({ ...account, card: { ...account.card!, creditLimit: v } });
                 await refreshCheckpoints();

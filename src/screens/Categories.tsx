@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  BackLink,
   CategoryAvatar,
   ConfirmButton,
   ErrorNote,
@@ -30,13 +31,9 @@ export function Categories() {
 
   return (
     <div className="page">
+      <BackLink label="More" onClick={() => go('settings')} />
       <div className="page-head">
-        <div className="row">
-          <button className="icon-btn" onClick={() => go('settings')} aria-label="Back">
-            <Icon name="left" size={18} />
-          </button>
-          <h1>Categories</h1>
-        </div>
+        <h1>Categories</h1>
         <button className="btn btn-primary" onClick={() => openCategory({ kind })}>
           Add category
         </button>

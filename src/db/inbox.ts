@@ -1,7 +1,7 @@
 import { PARSER_VERSION, parseSms, splitMessages } from '../domain/sms/parse';
-import { accountHintKey, suggest, type Suggestion } from '../domain/sms/match';
+import { accountHintKey, billCard, suggest, type Suggestion } from '../domain/sms/match';
 import type { ID, InboxItem, InboxSource, ISODate, Transaction } from '../domain/types';
-import { addDays, todayIST } from '../domain/dates';
+import { addDays, timeIST, todayIST } from '../domain/dates';
 import { contactFor, contactsLoaded } from '../domain/people';
 import { newId, stamp } from './db';
 import { db, getMeta, saveTransaction, setMeta } from './repo';
@@ -243,6 +243,67 @@ export interface AddInput {
   note?: string;
   /** Payment to/from a person: ask "Spent, lent or paid back?" in the Inbox. */
   askLoan?: boolean;
+  time?: string;
+}
+
+/**
+ * Card-bill payments added before billCard() existed may sit on the wrong card (U-16). Once, look
+ * again at each one Hisaab added from a bank SMS and move it when the bill amount says otherwise.
+ */
+export async function recheckBillPayments(): Promise<number> {
+  if (await getMeta<boolean>('billCardsRechecked', false)) return 0;
+  const [items, accounts, all] = await Promise.all([
+    db.inbox.where('status').equals('added').toArray(),
+    db.accounts.toArray(),
+    db.transactions.toArray(),
+  ]);
+  const live = accounts.filter((a) => !a.deletedAt && !a.archived);
+  let n = 0;
+  for (const i of items) {
+    if (!i.txnId || !i.parsed.isCardBillPayment) continue;
+    const t = all.find((x) => x.id === i.txnId);
+    if (!t || t.deletedAt || t.kind !== 'transfer' || t.source !== 'sms') continue;
+    const others = all.filter((x) => x.id !== t.id && !x.deletedAt);
+    const card = billCard(i.parsed, t.amount, t.date, live, others, t.accountId);
+    if (card && card.id !== t.toAccountId) {
+      await db.transactions.update(t.id, { toAccountId: card.id, updatedAt: stamp() });
+      t.toAccountId = card.id;
+      n++;
+    }
+  }
+  await setMeta('billCardsRechecked', true);
+  return n;
+}
+
+/** Older payments added from messages get their time of day once (U-15). */
+export async function backfillTimes(): Promise<number> {
+  if (await getMeta<boolean>('timesBackfilled', false)) return 0;
+  const items = await db.inbox.where('status').equals('added').toArray();
+  let n = 0;
+  for (const i of items) {
+    if (!i.txnId) continue;
+    const t = await db.transactions.get(i.txnId);
+    if (!t || t.time) continue;
+    const time = timeForItem(
+      { ...i, parsed: { ...i.parsed, time: parseSms(i.rawText).time } },
+      t.date,
+    );
+    if (!time) continue;
+    await db.transactions.update(t.id, { time });
+    n++;
+  }
+  await setMeta('timesBackfilled', true);
+  return n;
+}
+
+/**
+ * When the payment happened, if we can tell: the time in the message, else when the SMS arrived
+ * (same day only — banks send alerts within seconds). Pasted text has no real arrival time.
+ */
+export function timeForItem(item: InboxItem, date: ISODate): string | undefined {
+  if (item.parsed.time && (!item.parsed.date || item.parsed.date === date)) return item.parsed.time;
+  if (item.source === 'paste' || !item.receivedTs) return undefined;
+  return todayIST(new Date(item.receivedTs)) === date ? timeIST(item.receivedTs) : undefined;
 }
 
 /** Turn an inbox item into a confirmed transaction (and teach the merchant rule). */
@@ -256,6 +317,7 @@ export async function addFromInbox(
   const t = await saveTransaction(
     {
       ...input,
+      time: input.time ?? timeForItem(item, input.date),
       tags: [],
       source: item.source === 'paste' ? 'sms' : item.source,
       status: 'confirmed',

@@ -67,7 +67,7 @@ export function Welcome() {
           </span>
         </li>
         <li>
-          <Icon name="right" size={20} />
+          <Icon name="transfer" size={20} />
           <span>
             <b>Bill payments</b> <span className="muted">— moved, never counted twice</span>
           </span>

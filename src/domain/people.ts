@@ -71,3 +71,31 @@ export function contactFor(payee?: string, vpa?: string): string | undefined {
   }
   return best?.name;
 }
+
+/**
+ * Names to suggest while typing who you paid for: contacts first (when allowed), then people
+ * already in Lent & borrowed. Matches the start of any part of the name ("pri" → Priya Shah).
+ */
+export function suggestPeople(query: string, known: string[] = [], limit = 6): string[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const starts = (name: string) =>
+    name
+      .toLowerCase()
+      .split(/\s+/)
+      .some((part) => part.startsWith(q)) || name.toLowerCase().startsWith(q);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const name of [...people.map((p) => p.name), ...known]) {
+    const k = name.trim().toLowerCase();
+    if (!k || seen.has(k) || !starts(name)) continue;
+    seen.add(k);
+    out.push(name.trim());
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/** Whether a name is one of your contacts (for the "not in contacts" hint). */
+export const isContact = (name: string) =>
+  people.some((p) => p.name.trim().toLowerCase() === name.trim().toLowerCase());

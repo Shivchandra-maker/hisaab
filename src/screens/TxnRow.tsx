@@ -1,6 +1,7 @@
 import { AccountAvatar, Amount, CategoryAvatar } from '../design/components';
 import { Icon } from '../design/Icon';
-import { formatDate } from '../domain/dates';
+import { formatDate, formatTime } from '../domain/dates';
+import { INVESTMENTS } from '../domain/ledger';
 import { formatINR } from '../domain/money';
 import type { ID, Transaction } from '../domain/types';
 import { useStore } from '../store';
@@ -43,7 +44,7 @@ export function TxnRow({
   /** Lead the second line with the date (lists not grouped by day). */
   showDate?: boolean;
 }) {
-  const { accountById, categoryById, debts, today } = useStore();
+  const { accountById, categoryById, debts, today, meta } = useStore();
   const { openTxn } = useUI();
   const acc = accountById.get(t.accountId);
   const to = t.toAccountId ? accountById.get(t.toAccountId) : undefined;
@@ -57,7 +58,12 @@ export function TxnRow({
   ) : null;
   let title = t.merchant || cat?.name || 'Transaction';
   let sub = [
-    split ? `Split · ${t.splits!.length} categories` : cat?.name !== title ? cat?.name : null,
+    // D-12: with a date in front, the line is long — the icon already shows the category.
+    split
+      ? `Split · ${t.splits!.length} categories`
+      : showDate || cat?.name === title
+        ? null
+        : cat?.name,
     acc?.name,
     t.paymentMode && !redundantMode(acc?.kind, t.paymentMode) ? modeLabel[t.paymentMode] : null,
   ]
@@ -69,7 +75,7 @@ export function TxnRow({
     const isCardPayment = to?.kind === 'credit_card';
     avatar = neutralAvatar('transfer');
     title = t.note || (isCardPayment ? `${to?.name} bill` : 'Transfer');
-    sub = `${acc?.name} → ${to?.name}${isCardPayment ? ' · not spending' : ''}`;
+    sub = `${acc?.name} → ${to?.name}${isCardPayment ? ' · card bill' : ''}`;
     if (perspective) {
       const incoming = t.toAccountId === perspective;
       amount = (
@@ -79,7 +85,7 @@ export function TxnRow({
   } else if (t.kind === 'adjustment') {
     avatar = neutralAvatar('check');
     title = t.note || 'Balance updated';
-    sub = `${acc?.name} · adjustment · not spending`;
+    sub = `${acc?.name} · balance correction`;
     amount = (
       <span className="num amt-transfer">
         {(t.flow === 'in' ? '+' : '−') + formatINR(t.amount)}
@@ -89,7 +95,7 @@ export function TxnRow({
     const d = debts.find((x) => x.id === t.debtId);
     avatar = neutralAvatar('transfer');
     title = t.note || (d ? d.person : 'Money lent / borrowed');
-    sub = `${acc?.name} · ${d?.direction === 'borrowed' ? 'borrowed' : 'lent'} · not spending`;
+    sub = `${acc?.name} · ${d?.direction === 'borrowed' ? 'borrowed' : 'lent'}`;
     amount = (
       <span className="num amt-transfer">
         {(t.flow === 'in' ? '+' : '−') + formatINR(t.amount)}
@@ -99,18 +105,47 @@ export function TxnRow({
     sub = `Refund · ${sub}`;
   }
 
+  // Recorded but not your spending (U-18): lent, transfers, card bills, adjustments — and
+  // investments if you chose so. Faded so the spending stands out; nothing is hidden.
+  const invest =
+    t.kind === 'expense' &&
+    meta.fadeInvestments === true &&
+    (t.categoryId === INVESTMENTS || t.splits?.every((p) => p.categoryId === INVESTMENTS));
+  const notSpending =
+    t.kind === 'transfer' || t.kind === 'debt' || t.kind === 'adjustment' || invest;
+  const fade = notSpending && meta.fadeNonSpending !== false;
+  const tag =
+    t.kind === 'expense' && t.grossAmount
+      ? `of ${formatINR(t.grossAmount)} paid`
+      : t.kind === 'debt'
+        ? t.flow === 'in'
+          ? 'not income'
+          : 'not spending'
+        : t.kind === 'transfer' || t.kind === 'adjustment'
+          ? 'not spending'
+          : invest
+            ? 'invested'
+            : null;
+
   return (
-    <button className="item" onClick={() => openTxn(t)}>
+    <button className={`item ${fade ? 'is-faded' : ''}`} onClick={() => openTxn(t)}>
       {avatar}
       <div className="item-main">
         <div className="item-title">{title}</div>
         <div className="item-sub">
           {t.status === 'pending' ? 'Needs review · ' : ''}
-          {showDate ? `${t.date === today ? 'Today' : formatDate(t.date)} · ` : ''}
+          {showDate
+            ? `${t.date === today ? 'Today' : formatDate(t.date)}${t.time ? `, ${formatTime(t.time)}` : ''} · `
+            : t.time
+              ? `${formatTime(t.time)} · `
+              : ''}
           {sub}
         </div>
       </div>
-      <div className="item-amt">{amount}</div>
+      <div className="item-amt">
+        {amount}
+        {tag && <span className="item-tag">{tag}</span>}
+      </div>
     </button>
   );
 }

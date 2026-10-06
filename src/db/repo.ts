@@ -1,6 +1,7 @@
 import { HisaabDB, newId, stamp } from './db';
 import { defaultCategories } from './defaults';
 import { balanceOf, debtBalance } from '../domain/ledger';
+import { timeIST, todayIST } from '../domain/dates';
 import { isLiability } from '../domain/types';
 import { merchantKey } from '../domain/sms/categorize';
 import type {
@@ -95,6 +96,10 @@ export async function saveTransaction(
     await db.transactions.put(updated);
     return updated;
   }
+  // New entries made today without a time say when (U-15): balance corrections, loans and
+  // repayments, bill payments… Callers that set `time` themselves (even to blank) are left alone;
+  // an earlier date gets no time rather than a made-up one.
+  if (!('time' in t) && clean.date === todayIST()) clean.time = timeIST();
   const row = create<Transaction>(clean);
   await db.transactions.add(row);
   if (row.kind !== 'adjustment' && row.kind !== 'debt')

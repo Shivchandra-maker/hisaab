@@ -1,6 +1,12 @@
 import 'fake-indexeddb/auto';
 import { balanceOf, debtBalance, summariseMonth } from '../domain/ledger';
-import { resolvePersonPayment, reviewLoanQuestions, splitWithFriends } from './loans';
+import {
+  equalParts,
+  paidForOthers,
+  resolvePersonPayment,
+  reviewLoanQuestions,
+  splitWithFriends,
+} from './loans';
 import { setContacts } from '../domain/people';
 import { db, resetAll, setMeta } from './repo';
 import type { CapturedMessage } from './inbox';
@@ -280,5 +286,102 @@ describe('testing round 3 S1 fixes', () => {
     await reparseInboxIfNeeded();
     expect((await db.transactions.get('t-old'))!.deletedAt).toBeTruthy();
     expect((await db.inbox.get('i-old'))!.status).toBe('ignored');
+  });
+});
+
+describe('U-15/U-16 (phone round 4)', () => {
+  it('records the time of day from the message, or from when the SMS arrived', async () => {
+    const { txns } = await setupFrom(
+      phone([
+        ['2026-10-02T13:00:00', 'JD-KOTAKB-S', KOTAK_SPEND],
+        ['2026-10-02T15:03:20', 'AD-HDFCCC-S', CARD_SPEND],
+      ]),
+    );
+    expect(txns.find((t) => t.amount === 29200)?.time).toBe('13:00'); // arrival time
+    expect(txns.find((t) => t.amount === 97900)?.time).toBe('15:03'); // time in the text
+  });
+
+  it('a CRED payment goes to the card whose bill it matches, not the first card', async () => {
+    const msgs = phone([
+      ['2026-09-01T09:00:00', 'VM-HDFCBK-S', SALARY.replace('01-OCT-26', '01-SEP-26')],
+      [
+        '2026-09-05T10:00:00',
+        'AD-HDFCCC-S',
+        'Spent Rs.5000.00 On HDFC Bank Card 8834 At AMAZON On 2026-09-05:10:00:00',
+      ],
+      [
+        '2026-09-06T10:00:00',
+        'AX-AXISBK-S',
+        'Spent INR 1200 Axis Bank Card no. XX7441 06-09-26 10:00:00 IST MYNTRA Avl Limit: INR 48800.00',
+      ],
+      [
+        '2026-10-02T11:00:00',
+        'VM-HDFCBK-S',
+        'Rs.1200.00 debited from A/c XX4521 on 02-Oct-26 to VPA cred.club@axisb (UPI Ref No 426731621999)',
+      ],
+    ]);
+    const { txns, accounts } = await setupFrom(msgs);
+    const axis = accounts.find((a) => a.last4 === '7441')!;
+    const pay = txns.find((t) => t.kind === 'transfer' && t.amount === 120000);
+    expect(pay?.toAccountId).toBe(axis.id);
+  });
+});
+
+describe('U-21: paid for a group', () => {
+  const big = async () =>
+    (await db.transactions.toArray()).find((t) => t.amount === 231000 && t.kind === 'expense')!;
+
+  it('splits equally with me: my part stays spending, the rest is lent per person', async () => {
+    await setup();
+    const t = await big();
+    const parts = equalParts(t.amount, 3); // me, Asha, Ravi
+    expect(parts.reduce((a, b) => a + b, 0)).toBe(t.amount);
+    await paidForOthers(t.id, [
+      { person: 'Asha', amount: parts[1]! },
+      { person: 'Ravi', amount: parts[2]! },
+    ]);
+    const after = await db.transactions.toArray();
+    const mine = after.find((x) => x.id === t.id)!;
+    expect(mine).toMatchObject({ kind: 'expense', amount: parts[0], grossAmount: 231000 });
+    const loans = after.filter((x) => x.splitOf === t.id);
+    expect(loans.map((x) => x.amount).sort()).toEqual([parts[1], parts[2]].sort());
+    expect(loans.every((x) => x.kind === 'debt' && x.flow === 'out')).toBe(true);
+    // The card still owes the full amount.
+    const card = (await db.accounts.toArray()).find((a) => a.id === t.accountId)!;
+    const owedBefore = balanceOf(card, [t], '2026-10-04');
+    expect(balanceOf(card, after, '2026-10-04')).toBeGreaterThanOrEqual(owedBefore);
+    const oct = summariseMonth(after, '2026-09');
+    expect(oct.spent).toBe(
+      summariseMonth([...after.filter((x) => x.id !== t.id), t], '2026-09').spent -
+        231000 +
+        parts[0]!,
+    );
+  });
+
+  it('paid entirely for others: no spending at all, one loan each', async () => {
+    await setup();
+    const t = await big();
+    await paidForOthers(t.id, [
+      { person: 'Asha', amount: 131000 },
+      { person: 'Ravi', amount: 100000 },
+    ]);
+    const after = await db.transactions.toArray();
+    expect(after.filter((x) => x.kind === 'expense' && x.amount === 231000)).toHaveLength(0);
+    const debts = await db.debts.toArray();
+    expect(debts.map((d) => d.person).sort()).toEqual(['Asha', 'Ravi']);
+    const lent = after.filter((x) => x.kind === 'debt' && x.flow === 'out');
+    expect(lent.reduce((n, x) => n + x.amount, 0)).toBe(231000);
+  });
+
+  it('refuses parts that add up to more than was paid, or a name twice', async () => {
+    await setup();
+    const t = await big();
+    await expect(paidForOthers(t.id, [{ person: 'Asha', amount: 300000 }])).rejects.toThrow();
+    await expect(
+      paidForOthers(t.id, [
+        { person: 'Asha', amount: 1000 },
+        { person: ' asha ', amount: 1000 },
+      ]),
+    ).rejects.toThrow();
   });
 });

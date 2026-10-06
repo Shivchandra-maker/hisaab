@@ -5,6 +5,7 @@ import { exportBackup, importBackup, resetAll, setMeta } from '../db/repo';
 import { requestPersistentStorage, storageIsPersistent } from '../db/persist';
 import { useStore } from '../store';
 import { CaptureSettings } from './CaptureSettings';
+import { setSystemBars } from '../native/capture';
 import { useUI } from '../ui';
 
 export type Theme = 'system' | 'light' | 'dark';
@@ -12,6 +13,10 @@ export type Theme = 'system' | 'light' | 'dark';
 export function applyTheme(theme: Theme) {
   if (theme === 'system') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.setAttribute('data-theme', theme);
+  const dark =
+    theme === 'dark' ||
+    (theme === 'system' && window.matchMedia?.('(prefers-color-scheme: dark)').matches);
+  setSystemBars(!!dark);
 }
 
 export function Settings() {
@@ -131,6 +136,44 @@ export function Settings() {
         />
       </Panel>
 
+      <Panel title="Display">
+        <div className="stack">
+          <label className="toggle-row">
+            <span className="stack" style={{ gap: 2 }}>
+              <b>Fade payments that aren’t spending</b>
+              <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
+                They stay in lists so nothing is hidden, just quieter.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              className="switch"
+              checked={meta.fadeNonSpending !== false}
+              onChange={(e) => void setMeta('fadeNonSpending', e.target.checked)}
+            />
+          </label>
+          <div className="note" style={{ fontSize: 'var(--fs-sm)' }}>
+            <b>Never counted as spending or income:</b> money lent, borrowed or paid back · your
+            friends’ part when you paid for others · moves between your own accounts and ATM cash ·
+            credit-card bill payments.
+          </div>
+          <label className="toggle-row">
+            <span className="stack" style={{ gap: 2 }}>
+              <b>Fade investments too</b>
+              <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
+                SIPs are shown as “Invested”, not spending.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              className="switch"
+              checked={meta.fadeInvestments === true}
+              onChange={(e) => void setMeta('fadeInvestments', e.target.checked)}
+            />
+          </label>
+        </div>
+      </Panel>
+
       <Panel title="Backup">
         <div className="stack">
           <p className="muted" style={{ margin: 0 }}>
@@ -138,36 +181,35 @@ export function Settings() {
             {transactions.length} transactions). Download a backup now and then — clearing browser
             data deletes it. Sync across devices comes in a later phase.
           </p>
+          {/* D-09: storage status and its fix in one box; the two backup actions side by side. */}
           {kept !== undefined && (
-            <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
-              <span className={`pill ${kept ? 'pill-ok' : 'pill-warn'}`}>
-                {kept ? 'Storage protected' : 'Storage not protected'}
-              </span>
-              <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
+            <div className={`note storage-note ${kept ? 'note-ok' : 'note-warn'}`}>
+              <span>
+                <b>{kept ? 'Storage protected.' : 'Storage not protected.'}</b>{' '}
                 {kept
                   ? 'The system won’t clear Hisaab’s data when space runs low.'
                   : 'If the phone runs low on space, the system may clear Hisaab’s data.'}
               </span>
               {!kept && (
                 <button
-                  className="btn btn-sm"
+                  className="btn btn-sm btn-primary"
                   onClick={async () => {
                     const ok = await requestPersistentStorage();
                     setKept(ok);
                     toast(ok ? 'Storage protected' : 'Not allowed here — keep a backup');
                   }}
                 >
-                  Protect
+                  Protect now
                 </button>
               )}
             </div>
           )}
-          <div className="row" style={{ flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" onClick={download}>
+          <div className="row backup-actions">
+            <button className={`btn ${kept === false ? '' : 'btn-primary'}`} onClick={download}>
               Download backup
             </button>
             <button className="btn" onClick={() => fileRef.current?.click()}>
-              Restore from file…
+              Restore…
             </button>
             <input
               ref={fileRef}

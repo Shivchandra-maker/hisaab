@@ -32,6 +32,7 @@ import {
 } from '../domain/ledger';
 import { formatINR } from '../domain/money';
 import { Icon } from '../design/Icon';
+import { needsHeadline } from '../db/needs';
 import { useStore } from '../store';
 import { useUI } from '../ui';
 import { TxnRow } from './TxnRow';
@@ -45,6 +46,7 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
     today,
     subscriptions,
     inboxNew,
+    needs,
     rules,
   } = useStore();
   const toSort = useMemo(() => shopsToSort(txns, rules).shops.length, [txns, rules]);
@@ -70,7 +72,10 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
   const daily = useMemo(() => dailySpend(txns, month), [txns, month]);
   const prevDaily = useMemo(() => dailySpend(txns, addMonths(month, -1)), [txns, month]);
   const upTo = isCurrent ? Number(today.slice(8)) : daily.length;
-  const hasPace = daily.some((v) => v > 0) || prevDaily.some((v) => v > 0);
+  // D-04: in the first days of a month the line is a stub — the pill above already compares
+  // with last month, so the chart waits until there's a shape to show.
+  const hasPace =
+    (daily.some((v) => v > 0) || prevDaily.some((v) => v > 0)) && !(isCurrent && upTo < 5);
   const [rupee, ...digits] = formatINR(s.spent);
 
   const topCats = [...s.byCategory.entries()]
@@ -97,6 +102,8 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
   const dueCards = isCurrent ? cvs.filter((x) => x.snap.dueNow > 0) : [];
   const anyRollover = cvs.some((x) => x.v.onNextStatement > 0);
 
+  // D-02: say what it is ("New account found · ICICI Credit Card ••5566"), not just a count.
+  const headline = needsHeadline(needs);
   return (
     <div className="page">
       {pull.indicator}
@@ -117,10 +124,7 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
         <button className="inbox-banner" onClick={() => go('inbox')}>
           <Icon name="inbox" size={18} />
           <span>
-            <b>
-              {inboxNew} thing{inboxNew === 1 ? '' : 's'}
-            </b>{' '}
-            need{inboxNew === 1 ? 's' : ''} you in the Inbox
+            <b>{headline?.title}</b> {headline?.detail}
           </span>
           <span className="spacer" />
           <Icon name="right" size={16} />
@@ -155,6 +159,7 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
               current={daily}
               previous={prevDaily}
               upTo={upTo}
+              height={96}
               label={`Running total of spending in ${formatMonth(month)} compared with ${prevName}`}
             />
             <div className="legend">
@@ -244,7 +249,9 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
                     </div>
                     <div className="item-sub">
                       {v.spentThisMonth === 0
-                        ? `No spending yet · statement on ${formatDate(v.closingPeriod.end)}`
+                        ? isCurrent
+                          ? `No spending yet · statement on ${formatDate(v.closingPeriod.end)}`
+                          : `No card spending in ${formatMonth(month, 'short')}`
                         : v.onNextStatement === 0
                           ? `All on the ${formatDate(v.closingPeriod.end)} statement`
                           : v.onThisMonthsStatement === 0

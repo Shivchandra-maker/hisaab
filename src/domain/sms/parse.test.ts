@@ -1,4 +1,4 @@
-import { findDate, parseSms, splitMessages } from './parse';
+import { findDate, findTime, parseSms, splitMessages } from './parse';
 
 /*
  * Message shapes modelled on real Indian bank alerts (numbers, names and IDs changed).
@@ -481,5 +481,48 @@ describe('payment requests (H-15, seen in the simulator)', () => {
       'Rahul has requested money from you on Google Pay. On approving the request, INR 300.00 will be debited from your A/c',
     ])
       expect(parseSms(s).kind, s).toBe('ignore');
+  });
+});
+
+describe('time of day (U-15)', () => {
+  it('reads the time in common alert formats', () => {
+    expect(
+      findTime('Spent Rs.3298.00 On HDFC Bank Card 8834 At AMAZON On 2025-10-13:22:29:42'),
+    ).toBe('22:29');
+    expect(findTime('Spent INR 675 Axis Bank Card no. XX7441 03-01-26 11:55:55 IST AMAZON')).toBe(
+      '11:55',
+    );
+    expect(
+      findTime('spent on IDFC FIRST Bank Credit Card at AMAZON EU on 08-FEB-2025 at 01:28 PM'),
+    ).toBe('13:28');
+    expect(
+      findTime('Rs.215.00 debited from your Kotak Bank AC X3344 on 01-10-26.'),
+    ).toBeUndefined();
+  });
+});
+
+describe('balance-enquiry replies (U-11)', () => {
+  it('reads the balance even with words in between', () => {
+    for (const [s, amt, l4] of [
+      [
+        'Available Bal in HDFC Bank A/c XX4521 as on yesterday:06-OCT-26 INR 2,71,534.00. Cheques are subject to clearing',
+        27153400,
+        '4521',
+      ],
+      ['Your A/c XX3344 balance is Rs.2,73,346.00 as on 06-10-26 10:42', 27334600, '3344'],
+      [
+        'Dear Customer, the Available Balance in your Account XX4521 is INR 1,23,456.78 as on 06-Oct-26',
+        12345678,
+        '4521',
+      ],
+    ] as const) {
+      const p = parseSms(s);
+      expect(p, s).toMatchObject({
+        kind: 'ignore',
+        reason: 'Balance update',
+        balance: amt,
+        last4: l4,
+      });
+    }
   });
 });

@@ -212,6 +212,11 @@ export function BarChart({
   variant = 'accent',
   label = 'Bar chart',
   average,
+  dim,
+  onSelect,
+  selected,
+  describe,
+  cap,
 }: {
   values: Paise[];
   labels: (string | null)[];
@@ -222,13 +227,29 @@ export function BarChart({
   label?: string;
   /** Draws a dashed reference line (e.g. the monthly average). */
   average?: Paise;
+  /** Lighter bars (e.g. weekends). */
+  dim?: boolean[];
+  /** Bars become buttons (U-19: tap a day to see its payments). */
+  onSelect?: (i: number) => void;
+  /** The bar shown as picked. */
+  selected?: number;
+  /** Accessible name for each bar button. */
+  describe?: (i: number) => string;
+  /**
+   * Scale top (D-13). Bars above it are drawn cut off at the top with a break mark and their
+   * value written above, so one big day doesn't flatten all the others.
+   */
+  cap?: Paise;
 }) {
   const [ref, W] = useWidth<HTMLDivElement>();
   const padL = 40;
   const padR = 4;
-  const padT = showValues ? 20 : 8;
+  const capped = cap !== undefined && cap > 0 && values.some((v) => v > cap);
+  const padT = showValues || capped ? 20 : 8;
   const padB = 22;
-  const max = niceMax(Math.max(...values, average ?? 0, 1));
+  const max = niceMax(
+    capped ? Math.max(cap!, average ?? 0, 1) : Math.max(...values, average ?? 0, 1),
+  );
   const innerH = height - padT - padB;
   const step = (W - padL - padR) / values.length;
   const bw = Math.max(2, Math.min(40, step * 0.6));
@@ -259,20 +280,53 @@ export function BarChart({
         )}
         {values.map((v, i) => {
           const x = padL + i * step + (step - bw) / 2;
-          const top = y(v);
+          const over = capped && v > max;
+          const top = over ? padT : y(v);
           const hi = highlight === undefined || highlight === i;
+          const press = onSelect ? () => onSelect(i) : undefined;
           return (
-            <g key={i}>
+            <g
+              key={i}
+              className={onSelect ? 'bar-btn' : undefined}
+              role={onSelect ? 'button' : undefined}
+              tabIndex={onSelect ? 0 : undefined}
+              aria-label={onSelect ? (describe?.(i) ?? `${labels[i] ?? i + 1}`) : undefined}
+              onClick={press}
+              onKeyDown={
+                press
+                  ? (e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        press();
+                      }
+                    }
+                  : undefined
+              }
+            >
+              {onSelect && (
+                <rect className="hit" x={padL + i * step} y={padT} width={step} height={innerH} />
+              )}
               <title>{`${labels[i] ?? i + 1}: ${formatINR(v)}`}</title>
               <rect
-                className={`b ${variant === 'cycle' ? 'c' : ''} ${hi ? 'hi' : ''}`}
+                className={`b ${variant === 'cycle' ? 'c' : ''} ${hi ? 'hi' : ''} ${dim?.[i] ? 'dim' : ''} ${selected === i ? 'sel' : ''}`}
                 x={x}
                 y={top}
                 width={bw}
                 height={Math.max(v > 0 ? 2 : 0, padT + innerH - top)}
                 rx={Math.min(5, bw / 3)}
               />
-              {showValues && valuesFit && v > 0 && (
+              {over && (
+                <>
+                  <path
+                    className="cut"
+                    d={`M${x - 2},${padT + 9} l${bw + 4},-4 M${x - 2},${padT + 14} l${bw + 4},-4`}
+                  />
+                  <text className="val val-hi" x={x + bw / 2} y={padT - 6} textAnchor="middle">
+                    {formatINRCompact(v)}
+                  </text>
+                </>
+              )}
+              {showValues && valuesFit && v > 0 && !over && (
                 <text
                   className={`val ${hi ? 'val-hi' : ''}`}
                   x={x + bw / 2}
@@ -557,5 +611,64 @@ export function EmptyState({
       )}
       {action}
     </div>
+  );
+}
+
+/**
+ * A row of chips that scrolls sideways (D-14). Keeps the chosen chip in view — on open and when
+ * the choice changes — so you always see which account is picked, and fades the edges that have
+ * more chips behind them.
+ */
+export function ChipRow({ value, children }: { value: string; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ left: false, right: false });
+  const measure = () => {
+    const el = ref.current;
+    if (!el) return;
+    setEdges({
+      left: el.scrollLeft > 2,
+      right: el.scrollLeft + el.clientWidth < el.scrollWidth - 2,
+    });
+  };
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const chip = el?.querySelector<HTMLElement>('[aria-pressed="true"]');
+    if (el && chip) {
+      // Only the row scrolls (not the sheet): centre the chosen chip when it's out of view.
+      const l = chip.offsetLeft - el.offsetLeft;
+      if (l < el.scrollLeft || l + chip.offsetWidth > el.scrollLeft + el.clientWidth)
+        el.scrollLeft = l - (el.clientWidth - chip.offsetWidth) / 2;
+    }
+    measure();
+  }, [value]);
+  return (
+    <div
+      ref={ref}
+      className={`chips scroll ${edges.left ? 'fade-l' : ''} ${edges.right ? 'fade-r' : ''}`}
+      onScroll={measure}
+    >
+      {children}
+    </div>
+  );
+}
+
+/**
+ * "‹ Insights" above a page title (D-15). A labelled text link, so it never looks like the month
+ * switcher's "‹" and says where it goes.
+ */
+export function BackLink({
+  label,
+  onClick,
+  phoneOnly,
+}: {
+  label: string;
+  onClick: () => void;
+  phoneOnly?: boolean;
+}) {
+  return (
+    <button className={`back-link ${phoneOnly ? 'phone-only-flex' : ''}`} onClick={onClick}>
+      <Icon name="left" size={16} />
+      {label}
+    </button>
   );
 }

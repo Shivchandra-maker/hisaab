@@ -3,7 +3,7 @@ import { reviewLoanQuestions } from './db/loans';
 import { refreshCheckpoints } from './db/checkpoints';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { reparseInboxIfNeeded } from './db/inbox';
+import { backfillTimes, recheckBillPayments, reparseInboxIfNeeded } from './db/inbox';
 import { inboxNeeds, type InboxNeeds } from './db/needs';
 import { requestPersistentStorage } from './db/persist';
 import { db, ensureDefaults } from './db/repo';
@@ -68,6 +68,8 @@ export function StoreProvider({ children, loading }: { children: ReactNode; load
     db.open()
       .then(() => ensureDefaults())
       .then(() => reparseInboxIfNeeded())
+      .then(() => backfillTimes())
+      .then(() => recheckBillPayments())
       // Phone: re-checked after contacts load (native/capture.ts). Browser: no contacts → no asks.
       .then(() => (Capacitor.isNativePlatform() ? undefined : reviewLoanQuestions()))
       .then(() => refreshCheckpoints())
@@ -98,7 +100,15 @@ export function StoreProvider({ children, loading }: { children: ReactNode; load
     const accs = accounts.filter((a) => !a.deletedAt).sort(byOrder);
     const cats = categories.filter((c) => !c.deletedAt).sort(byOrder);
     const meta = Object.fromEntries(metaRows.map((m) => [m.key, m.value]));
-    const liveTxns = transactions.filter((t) => !t.deletedAt);
+    // Oldest first: by day, then time of day, then when it was added (U-15).
+    const liveTxns = transactions
+      .filter((t) => !t.deletedAt)
+      .sort(
+        (a, b) =>
+          a.date.localeCompare(b.date) ||
+          (a.time ?? '').localeCompare(b.time ?? '') ||
+          a.createdAt.localeCompare(b.createdAt),
+      );
     const liveRules = rules
       .filter((r) => !r.deletedAt)
       .sort((a, b) => a.name.localeCompare(b.name));

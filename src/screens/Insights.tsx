@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   BarChart,
   CategoryAvatar,
@@ -6,27 +6,24 @@ import {
   MonthSwitcher,
   Panel,
   Progress,
+  Sheet,
 } from '../design/components';
 import { Icon } from '../design/Icon';
-import { addMonths, formatMonth, monthOf, monthRange } from '../domain/dates';
+import { addDays, addMonths, formatDate, formatMonth, monthOf, monthRange } from '../domain/dates';
 import { counted, dailySpend, spendEffect, summarise, summariseMonth } from '../domain/ledger';
 import { formatINR, formatINRCompact } from '../domain/money';
 import type { PaymentMode } from '../domain/types';
+import { breakdownRoute } from '../domain/breakdown';
+import { dailyStats, vsTypical } from '../domain/daily';
 import { useStore } from '../store';
-
-const modeNames: Record<PaymentMode, string> = {
-  upi: 'UPI',
-  card: 'Card swipe / online',
-  netbanking: 'Net banking',
-  cash: 'Cash',
-  auto_debit: 'Auto-debit',
-  cheque: 'Cheque',
-  wallet: 'Wallet',
-  other: 'Other',
-};
+import { useUI } from '../ui';
+import { MODE_NAMES as modeNames } from './Breakdown';
+import { TxnRow } from './TxnRow';
 
 export function Insights({ month, setMonth }: { month: string; setMonth: (m: string) => void }) {
   const { transactions: txns, categoryById, accountById, today } = useStore();
+  const { go } = useUI();
+  const [day, setDay] = useState<string>();
   const isCurrent = month === monthOf(today);
   const prevMonth = addMonths(month, -1);
   const s = useMemo(() => summariseMonth(txns, month), [txns, month]);
@@ -60,6 +57,16 @@ export function Insights({ month, setMonth }: { month: string; setMonth: (m: str
   );
   const vsLabel = `vs ${formatMonth(prevMonth, 'short')}${isCurrent ? ' by this date' : ''}`;
   const todayIdx = monthOf(today) === month ? Number(today.slice(8)) - 1 : undefined;
+  // Days that have passed (all of them for an earlier month).
+  const daysSoFar = todayIdx !== undefined ? todayIdx + 1 : daily.length;
+  // D-13: a "typical day" leaves out one-off big days (rent, SIPs), which are drawn cut off.
+  const stats = dailyStats(daily, daysSoFar);
+  const dailyAvg = stats.typical;
+  const bigDays = stats.outliers.map((i) => ({ i, v: daily[i] ?? 0 }));
+  const weekend = daily.map((_, i) => {
+    const d = new Date(`${month}-${String(i + 1).padStart(2, '0')}T12:00:00+05:30`).getUTCDay();
+    return d === 0 || d === 6;
+  });
 
   return (
     <div className="page">
@@ -97,15 +104,61 @@ export function Insights({ month, setMonth }: { month: string; setMonth: (m: str
                 label={`Spending per month, ${formatMonth(months[0]!)} to ${formatMonth(month)}`}
               />
             </Panel>
-            <Panel title={`Daily spending · ${formatMonth(month, 'short')}`}>
-              <BarChart
-                values={daily.map((v) => Math.max(0, v))}
-                labels={daily.map((_, i) =>
-                  [0, 7, 14, 21].includes(i) || i === daily.length - 1 ? String(i + 1) : null,
+            <Panel
+              title={`Daily spending · ${formatMonth(month, 'short')}`}
+              action={
+                dailyAvg > 0 && (
+                  <span className="faint panel-note">
+                    <i className="lg-dash" /> typical day {formatINR(dailyAvg)}
+                  </span>
+                )
+              }
+            >
+              <div className="stack" style={{ gap: 'var(--sp-2)' }}>
+                <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'baseline' }}>
+                  <span className="num" style={{ fontSize: 'var(--fs-xl)', fontWeight: 600 }}>
+                    {formatINR(Math.max(0, s.spent))}
+                  </span>
+                  <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
+                    in {daysSoFar} day{daysSoFar === 1 ? '' : 's'} · {s.count} payments
+                  </span>
+                </div>
+                <BarChart
+                  values={daily.map((v) => Math.max(0, v))}
+                  labels={daily.map((_, i) =>
+                    [0, 7, 14, 21].includes(i) || i === daily.length - 1 ? String(i + 1) : null,
+                  )}
+                  height={220}
+                  average={dailyAvg || undefined}
+                  cap={bigDays.length ? stats.scaleTop : undefined}
+                  dim={weekend}
+                  selected={day ? Number(day.slice(8)) - 1 : todayIdx}
+                  onSelect={(i) => setDay(`${month}-${String(i + 1).padStart(2, '0')}`)}
+                  describe={(i) =>
+                    `${formatDate(`${month}-${String(i + 1).padStart(2, '0')}`, 'weekday')}: ${formatINR(Math.max(0, daily[i] ?? 0))}`
+                  }
+                  label={`Spending per day in ${formatMonth(month)}`}
+                />
+                <div className="row chart-legend">
+                  <span>
+                    <i className="lg-box" /> Spent that day
+                  </span>
+                  <span>
+                    <i className="lg-box lg-dim" /> Weekend
+                  </span>
+                  <span className="spacer" />
+                  <span className="faint">Tap a day</span>
+                </div>
+                {bigDays.length > 0 && (
+                  <p className="faint chart-foot">
+                    Cut off to keep other days readable:{' '}
+                    {bigDays
+                      .map(({ i, v }) => `${i + 1} ${formatMonth(month, 'short')} ${formatINR(v)}`)
+                      .join(', ')}
+                    . Not in the typical day.
+                  </p>
                 )}
-                highlight={todayIdx}
-                label={`Spending per day in ${formatMonth(month)}`}
-              />
+              </div>
             </Panel>
           </div>
 
@@ -116,7 +169,11 @@ export function Insights({ month, setMonth }: { month: string; setMonth: (m: str
                 const before = prev.byCategory.get(id) ?? 0;
                 const change = before > 0 ? Math.round(((amt - before) / before) * 100) : null;
                 return (
-                  <div key={id} className="row cat-row">
+                  <button
+                    key={id}
+                    className="row cat-row drill"
+                    onClick={() => go(breakdownRoute({ by: 'category', id }))}
+                  >
                     <CategoryAvatar category={c} small />
                     <div className="item-main stack" style={{ gap: 4 }}>
                       <div className="row">
@@ -149,7 +206,8 @@ export function Insights({ month, setMonth }: { month: string; setMonth: (m: str
                         )}
                       </div>
                     </div>
-                  </div>
+                    <Icon name="right" size={16} className="faint" />
+                  </button>
                 );
               })}
             </div>
@@ -159,15 +217,21 @@ export function Insights({ month, setMonth }: { month: string; setMonth: (m: str
             <Panel title="How you paid">
               <div className="stack">
                 {modes.map(([k, v]) => (
-                  <div key={k} className="stack" style={{ gap: 4 }}>
+                  <button
+                    key={k}
+                    className="stack drill"
+                    style={{ gap: 4 }}
+                    onClick={() => go(breakdownRoute({ by: 'mode', id: k }))}
+                  >
                     <div className="row">
                       <span>{modeNames[k as PaymentMode] ?? k}</span>
                       <span className="faint share">{Math.round((v / totalPaid) * 100)}%</span>
                       <span className="spacer" />
                       <span className="num">{formatINR(v)}</span>
+                      <Icon name="right" size={16} className="faint" />
                     </div>
                     <Progress value={v / totalPaid} thin />
-                  </div>
+                  </button>
                 ))}
               </div>
             </Panel>
@@ -176,18 +240,24 @@ export function Insights({ month, setMonth }: { month: string; setMonth: (m: str
                 {accts.map(([id, v]) => {
                   const a = accountById.get(id);
                   return (
-                    <div key={id} className="stack" style={{ gap: 4 }}>
+                    <button
+                      key={id}
+                      className="stack drill"
+                      style={{ gap: 4 }}
+                      onClick={() => go(breakdownRoute({ by: 'account', id }))}
+                    >
                       <div className="row">
                         <span>{a?.name}</span>
                         <span className="spacer" />
                         <span className="num">{formatINR(v)}</span>
+                        <Icon name="right" size={16} className="faint" />
                       </div>
                       <Progress
                         value={v / totalSpent}
                         color={a?.kind === 'credit_card' ? 'var(--cycle)' : 'var(--accent)'}
                         thin
                       />
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -195,6 +265,83 @@ export function Insights({ month, setMonth }: { month: string; setMonth: (m: str
           </div>
         </>
       )}
+      {day && (
+        <DaySheet
+          date={day}
+          avg={dailyAvg}
+          onMove={(d) => setDay(d)}
+          onClose={() => setDay(undefined)}
+          first={`${month}-01`}
+          last={todayIdx !== undefined ? today : monthRange(month).end}
+        />
+      )}
     </div>
+  );
+}
+
+/** One day's payments from the daily chart (U-19): spending, and what wasn't (faded). */
+function DaySheet({
+  date,
+  avg,
+  first,
+  last,
+  onMove,
+  onClose,
+}: {
+  date: string;
+  avg: number;
+  first: string;
+  last: string;
+  onMove: (d: string) => void;
+  onClose: () => void;
+}) {
+  const { transactions } = useStore();
+  const list = transactions.filter((t) => counted(t) && t.date === date).reverse();
+  const spent = list.reduce((n, t) => n + spendEffect(t), 0);
+  const spendCount = list.filter((t) => t.kind === 'expense').length;
+  const refundCount = list.filter((t) => t.kind === 'refund').length;
+  const cmp = vsTypical(Math.max(0, spent), avg);
+  const gap = Math.abs(Math.max(0, spent) - avg);
+  const prev = addDays(date, -1);
+  const next = addDays(date, 1);
+  return (
+    <Sheet title={formatDate(date, 'long')} onClose={onClose}>
+      <div className="stack" style={{ gap: 'var(--sp-3)' }}>
+        <div className="stack" style={{ gap: 2 }}>
+          <span className="hero-amount num" style={{ fontSize: 'var(--fs-2xl)' }}>
+            {formatINR(Math.max(0, spent))}
+          </span>
+          <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
+            {spendCount} payment{spendCount === 1 ? '' : 's'}
+            {refundCount ? ` · ${refundCount} refund${refundCount === 1 ? '' : 's'}` : ''}
+            {avg > 0 && spent > 0
+              ? cmp === 'about'
+                ? ' · about a typical day'
+                : ` · ${formatINR(gap)} ${cmp} than a typical day`
+              : ''}
+          </span>
+        </div>
+        <div className="row">
+          <button className="btn btn-sm" disabled={prev < first} onClick={() => onMove(prev)}>
+            <Icon name="left" size={14} /> {formatDate(prev)}
+          </button>
+          <span className="spacer" />
+          <button className="btn btn-sm" disabled={next > last} onClick={() => onMove(next)}>
+            {formatDate(next)} <Icon name="right" size={14} />
+          </button>
+        </div>
+        {list.length === 0 ? (
+          <p className="muted" style={{ margin: 0 }}>
+            Nothing on this day.
+          </p>
+        ) : (
+          <div className="list">
+            {list.map((t) => (
+              <TxnRow key={t.id} t={t} />
+            ))}
+          </div>
+        )}
+      </div>
+    </Sheet>
   );
 }

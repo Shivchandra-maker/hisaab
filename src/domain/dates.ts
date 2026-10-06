@@ -35,6 +35,23 @@ export function todayIST(now: Date = new Date()): ISODate {
   return parts; // en-CA formats as YYYY-MM-DD
 }
 
+/** Clock time in IST as "HH:mm" (24h, for storing). */
+export function timeIST(now: Date | number = new Date()): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: IST,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(typeof now === 'number' ? new Date(now) : now);
+}
+
+/** "21:05" → "9:05 pm". */
+export function formatTime(hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number) as [number, number];
+  if (Number.isNaN(h) || Number.isNaN(m)) return hhmm;
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h < 12 ? 'am' : 'pm'}`;
+}
+
 export const daysInMonth = (y: number, m: number): number =>
   new Date(Date.UTC(y, m, 0)).getUTCDate();
 

@@ -8,15 +8,16 @@ import {
   MoneyInput,
   Segmented,
   Sheet,
+  ChipRow,
 } from '../design/components';
 import { periodContaining } from '../domain/cycle';
-import { addDays, formatDate } from '../domain/dates';
+import { addDays, formatDate, timeIST } from '../domain/dates';
 import { cleanAmountInput, formatINR, toPaise, toRupees } from '../domain/money';
 import type { Account, PaymentMode, Split, Transaction } from '../domain/types';
 import { deleteTransaction, restoreTransaction, saveTransaction } from '../db/repo';
 import { guessCategory } from '../domain/sms/categorize';
+import { PaidForOthers, type PendingSplit } from './PaidForOthers';
 import { useStore } from '../store';
-import { resolvePersonPayment, splitWithFriends } from '../db/loans';
 import { useUI, type TxnDraft } from '../ui';
 
 type Tab = 'expense' | 'income' | 'transfer';
@@ -95,6 +96,17 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
   );
   const [toAccountId, setToAccountId] = useState(initial?.toAccountId ?? '');
   const [date, setDate] = useState(initial?.date ?? today);
+  // New entries start at "now"; older ones keep whatever time they had (maybe none).
+  // New entries made for today start at "now"; any other day starts blank (we don't know when),
+  // unless you set it. Older entries keep whatever time they had (maybe none).
+  const [time, setTime] = useState(
+    initial?.id ? (initial.time ?? '') : (initial?.date ?? today) === today ? timeIST() : '',
+  );
+  const [timeTouched, setTimeTouched] = useState(!!initial?.id);
+  const pickDate = (d: string) => {
+    setDate(d);
+    if (!timeTouched) setTime(d === today ? timeIST() : '');
+  };
   const [merchant, setMerchant] = useState(initial?.merchant ?? '');
   // Once you pick a category yourself, typing a payee no longer changes it.
   const [catTouched, setCatTouched] = useState(!!initial?.categoryId);
@@ -131,6 +143,7 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
   );
   const [showAll, setShowAll] = useState(false);
   const [error, setError] = useState('');
+  const [split, setSplit] = useState<PendingSplit | null>(null);
 
   const catKind = tab === 'income' && !refund ? 'income' : 'expense';
   const pickable = categories.filter((c) => c.kind === catKind && !c.archived);
@@ -194,6 +207,7 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
       kind,
       amount: toPaise(amount || '0'),
       date,
+      time: time || undefined,
       accountId,
       toAccountId: kind === 'transfer' ? toAccountId : undefined,
       categoryId:
@@ -214,6 +228,12 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
       if (date > today)
         throw new Error('That date is in the future. Add it on the day the money actually moves.');
       await saveTransaction(build() as Transaction);
+      // D-19: one Save — the payment first, then the split set up below it.
+      if (split) {
+        await split.commit();
+        onClose();
+        return;
+      }
       toast(
         editing
           ? 'Saved'
@@ -464,11 +484,31 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
         </div>
       )}
 
+      {/* D-10: in the order people say it — ₹180 at Blue Tokai, from HDFC, by UPI. */}
+      {tab !== 'transfer' && (
+        <Field label={tab === 'income' ? 'From' : 'Paid to'} htmlFor="qa-merchant">
+          <input
+            id="qa-merchant"
+            className="input"
+            placeholder={tab === 'income' ? 'e.g. Employer' : 'e.g. Swiggy, landlord'}
+            value={merchant}
+            list="qa-payees"
+            autoComplete="off"
+            onChange={(e) => onMerchant(e.target.value)}
+          />
+          <datalist id="qa-payees">
+            {payees.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </Field>
+      )}
       <div className="field">
         <span className="label">
           {tab === 'transfer' ? 'From' : tab === 'income' ? 'Into' : 'Paid from'}
+          {acc && <span className="label-value"> · {acc.name}</span>}
         </span>
-        <div className="chips scroll">
+        <ChipRow value={accountId}>
           {activeAccounts.map((a) => (
             <button
               key={a.id}
@@ -482,12 +522,12 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
               {a.name}
             </button>
           ))}
-        </div>
+        </ChipRow>
       </div>
       {tab === 'transfer' && (
         <div className="field">
-          <span className="label">To</span>
-          <div className="chips scroll">
+          <span className="label">To{to && <span className="label-value"> · {to.name}</span>}</span>
+          <ChipRow value={toAccountId}>
             {activeAccounts
               .filter((a) => a.id !== accountId)
               .map((a) => (
@@ -500,56 +540,36 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
                   {a.name}
                 </button>
               ))}
-          </div>
+          </ChipRow>
         </div>
       )}
 
-      <div className="grid-2">
-        {tab !== 'transfer' && (
-          <Field label={tab === 'income' ? 'From' : 'Paid to'} htmlFor="qa-merchant">
-            <input
-              id="qa-merchant"
-              className="input"
-              placeholder={tab === 'income' ? 'e.g. Employer' : 'e.g. Swiggy, landlord'}
-              value={merchant}
-              list="qa-payees"
-              autoComplete="off"
-              onChange={(e) => onMerchant(e.target.value)}
-            />
-            <datalist id="qa-payees">
-              {payees.map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
-          </Field>
-        )}
-        <Field label="How" htmlFor="qa-mode">
-          <select
-            id="qa-mode"
-            className="input"
-            value={effectiveMode ?? ''}
-            onChange={(e) => setMode((e.target.value || undefined) as PaymentMode | undefined)}
-          >
-            {tab === 'transfer' && <option value="">Not set</option>}
-            {modeOptions.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-      </div>
+      <Field label="How" htmlFor="qa-mode">
+        <select
+          id="qa-mode"
+          className="input"
+          value={effectiveMode ?? ''}
+          onChange={(e) => setMode((e.target.value || undefined) as PaymentMode | undefined)}
+        >
+          {tab === 'transfer' && <option value="">Not set</option>}
+          {modeOptions.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+      </Field>
 
       <div className="field">
         <span className="label">Date</span>
         <div className="chips">
-          <button className="chip" aria-pressed={date === today} onClick={() => setDate(today)}>
+          <button className="chip" aria-pressed={date === today} onClick={() => pickDate(today)}>
             Today
           </button>
           <button
             className="chip"
             aria-pressed={date === addDays(today, -1)}
-            onClick={() => setDate(addDays(today, -1))}
+            onClick={() => pickDate(addDays(today, -1))}
           >
             Yesterday
           </button>
@@ -563,7 +583,21 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
             style={{ width: 'auto', padding: '5px 10px' }}
             max={today}
             value={date}
-            onChange={(e) => e.target.value && setDate(e.target.value)}
+            onChange={(e) => e.target.value && pickDate(e.target.value)}
+          />
+          <label className="sr-only" htmlFor="qa-time">
+            Time
+          </label>
+          <input
+            id="qa-time"
+            type="time"
+            className="input"
+            style={{ width: 'auto', padding: '5px 10px' }}
+            value={time}
+            onChange={(e) => {
+              setTime(e.target.value);
+              setTimeTouched(true);
+            }}
           />
         </div>
       </div>
@@ -580,9 +614,14 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
 
       {cardNote && <div className="note note-cycle">{cardNote}</div>}
       {editing && initial?.kind === 'expense' && initial.id && (
-        <PaidForSomeone txnId={initial.id} total={initial.amount ?? 0} onDone={onClose} />
+        <PaidForOthers txn={initial as Transaction} total={total} onPending={setSplit} />
       )}
       <ErrorNote message={error} />
+      {split && (
+        <button className="btn btn-primary btn-block" onClick={save}>
+          {split.label}
+        </button>
+      )}
       <div className="row">
         {editing && (
           <ConfirmButton label="Delete" confirmLabel="Tap again to delete" onConfirm={remove} />
@@ -593,88 +632,13 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
           </button>
         )}
         <span className="spacer" />
-        <button className={`btn btn-primary ${editing ? '' : 'btn-block'}`} onClick={save}>
-          Save
-        </button>
+        {!split && (
+          <button className={`btn btn-primary ${editing ? '' : 'btn-block'}`} onClick={save}>
+            Save
+          </button>
+        )}
       </div>
     </Sheet>
-  );
-}
-
-/**
- * Bought something for a friend (e.g. on your card)? Their part becomes money lent: your card
- * bill stays the same, your spending drops, and they show up in Lent & borrowed.
- */
-function PaidForSomeone({
-  txnId,
-  total,
-  onDone,
-}: {
-  txnId: string;
-  total: number;
-  onDone: () => void;
-}) {
-  const { toast } = useUI();
-  const [open, setOpen] = useState(false);
-  const [who, setWho] = useState('');
-  const [amount, setAmount] = useState('');
-  const [error, setError] = useState('');
-  if (!open)
-    return (
-      <button
-        className="link-btn"
-        style={{ alignSelf: 'flex-start' }}
-        onClick={() => setOpen(true)}
-      >
-        Paid for someone?
-      </button>
-    );
-  const save = async () => {
-    try {
-      setError('');
-      const part = amount ? toPaise(amount) : total;
-      if (part <= 0 || part > total) throw new Error('Enter up to the full amount.');
-      if (part === total) await resolvePersonPayment(txnId, who, 'lent');
-      else await splitWithFriends(txnId, [{ person: who, amount: part }]);
-      toast(`${formatINR(part)} lent to ${who.trim()} — see Lent & borrowed`);
-      onDone();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save.');
-    }
-  };
-  return (
-    <div className="panel stack" style={{ gap: 'var(--sp-2)', padding: 'var(--sp-3)' }}>
-      <b style={{ fontSize: 'var(--fs-sm)' }}>Paid for someone</b>
-      <div className="grid-2" style={{ gap: 'var(--sp-2)' }}>
-        <Field label="Who" htmlFor="pfs-who">
-          <input
-            id="pfs-who"
-            className="input"
-            value={who}
-            onChange={(e) => setWho(e.target.value)}
-          />
-        </Field>
-        <Field label="Their part" htmlFor="pfs-amt">
-          <input
-            id="pfs-amt"
-            className="input num"
-            inputMode="decimal"
-            placeholder={`All ${formatINR(total)}`}
-            value={amount}
-            onChange={(e) => setAmount(cleanAmountInput(e.target.value, amount))}
-          />
-        </Field>
-      </div>
-      <ErrorNote message={error} />
-      <div className="row" style={{ gap: 'var(--sp-2)' }}>
-        <button className="btn btn-primary" disabled={!who.trim()} onClick={save}>
-          Mark as lent
-        </button>
-        <button className="btn" onClick={() => setOpen(false)}>
-          Cancel
-        </button>
-      </div>
-    </div>
   );
 }
 

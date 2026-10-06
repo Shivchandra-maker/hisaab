@@ -38,4 +38,20 @@ describe('inboxNeeds', () => {
     expect(on.ready.length).toBeGreaterThan(0);
     expect(off.count).toBe(on.count + on.ready.length);
   });
+
+  it('D-02: the Home banner names the one thing that needs you', async () => {
+    const { needsHeadline } = await import('./needs');
+    const n = inboxNeeds({
+      inbox: await db.inbox.toArray(),
+      transactions: await db.transactions.toArray(),
+      accounts: await db.accounts.toArray(),
+      rules: await db.rules.toArray(),
+      accountHints: {},
+      autoAdd: true,
+    });
+    const h = needsHeadline(n)!;
+    expect(n.count).toBe(1);
+    expect(h.title).toBe('New account found');
+    expect(h.detail).toMatch(/ICICI Credit Card ••5566/);
+  });
 });

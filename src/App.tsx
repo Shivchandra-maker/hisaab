@@ -20,6 +20,8 @@ import { Welcome } from './screens/Welcome';
 import { WhereMoney } from './screens/WhereMoney';
 import { handleBackButton, isAndroidApp, startCapture } from './native/capture';
 import { QuickSetup } from './screens/QuickSetup';
+import { Breakdown } from './screens/Breakdown';
+import { parseBreakdownRoute } from './domain/breakdown';
 import { addAllReady } from './db/inbox';
 import { useStore } from './store';
 import { UICtx, type TxnDraft, type UI } from './ui';
@@ -41,9 +43,11 @@ const sectionOf = (r: string) =>
     ? 'accounts'
     : ['categories', 'style', 'rules'].includes(r)
       ? 'settings'
-      : r === 'sort' || r === 'inbox'
-        ? 'home' // Inbox opens from the bell on Home (D-02)
-        : r;
+      : r.startsWith('spend-')
+        ? 'insights'
+        : r === 'sort' || r === 'inbox'
+          ? 'home' // Inbox opens from the bell on Home (D-02)
+          : r;
 
 /** The + button only where adding a payment is what you came to do (D-05). */
 const showFab = (r: string) =>
@@ -152,6 +156,13 @@ export function App() {
     return () => window.removeEventListener('keydown', on);
   }, [editor, onboarded]);
 
+  // On an account or card screen, "+" adds to that account (D-16: one add button per screen).
+  const routeAccount = route.startsWith('acct-') || route.startsWith('card-') ? route.slice(5) : '';
+  const addHere = () =>
+    setEditor({
+      type: 'txn',
+      draft: routeAccount ? { kind: 'expense', accountId: routeAccount } : undefined,
+    });
   const close = () => setEditor(null);
   // Android app, first launch after setup: offer to read past bank messages.
   const [setupHidden, setSetupHidden] = useState(false);
@@ -198,6 +209,8 @@ export function App() {
   else if (route === 'transactions') screen = <Transactions month={month} setMonth={setMonth} />;
   else if (route === 'accounts') screen = <Accounts />;
   else if (route === 'insights') screen = <Insights month={month} setMonth={setMonth} />;
+  else if (parseBreakdownRoute(route))
+    screen = <Breakdown k={parseBreakdownRoute(route)!} month={month} setMonth={setMonth} />;
   else if (route === 'settings') screen = <Settings />;
   else if (route === 'people') screen = <People />;
   else if (route === 'categories') screen = <Categories />;
@@ -232,7 +245,7 @@ export function App() {
           </nav>
           <button
             className="btn btn-primary btn-block add-btn"
-            onClick={() => setEditor({ type: 'txn' })}
+            onClick={addHere}
             title="Shortcut: N"
           >
             <Icon name="plus" size={18} />
@@ -253,7 +266,7 @@ export function App() {
             <div className="page" style={{ marginBottom: 'var(--sp-4)' }}>
               <div className="banner sample-banner">
                 <span>
-                  <b>Sample data</b> — nothing here is real.
+                  <b>Sample data</b> — not your money
                 </span>
                 <button className="banner-link" onClick={() => go('settings')}>
                   Use my own
@@ -286,11 +299,7 @@ export function App() {
           ))}
         </nav>
         {showFab(route) && (
-          <button
-            className="fab"
-            onClick={() => setEditor({ type: 'txn' })}
-            aria-label="Add transaction"
-          >
+          <button className="fab" onClick={addHere} aria-label="Add transaction">
             <Icon name="plus" size={26} />
           </button>
         )}

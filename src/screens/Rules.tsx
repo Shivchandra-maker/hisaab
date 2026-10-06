@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CategoryAvatar, EmptyState } from '../design/components';
+import { BackLink, CategoryAvatar, EmptyState } from '../design/components';
 import { Icon } from '../design/Icon';
 import { deleteRule, saveRule } from '../db/repo';
 import { useStore } from '../store';
@@ -14,13 +14,9 @@ export function Rules() {
 
   return (
     <div className="page">
+      <BackLink label="More" onClick={() => go('settings')} />
       <div className="page-head">
-        <div className="row">
-          <button className="icon-btn" onClick={() => go('settings')} aria-label="Back">
-            <Icon name="left" size={18} />
-          </button>
-          <h1>Merchant rules</h1>
-        </div>
+        <h1>Merchant rules</h1>
       </div>
       <p className="muted" style={{ margin: 0 }}>
         When you add or correct a transaction, Hisaab remembers the category for that merchant and

@@ -1,5 +1,5 @@
 import { daysBetween } from '../dates';
-import { counted } from '../ledger';
+import { cardSnapshot, counted } from '../ledger';
 import type {
   Account,
   ID,
@@ -269,6 +269,41 @@ export function findTransferPair(
   return undefined;
 }
 
+/**
+ * Which card a "paid to CRED / card bill" debit paid (U-16). With several cards, the paying
+ * account alone can't tell — two cards paid from the same bank used to land on the first one.
+ * In order: the card's number in the text; the one card whose bill (statement, what's left of it,
+ * or everything owed) is exactly this amount; the only card paid from this account; the only card.
+ * Otherwise nobody guesses: the Inbox asks.
+ */
+export function billCard(
+  p: ParsedSms,
+  amount: number,
+  date: ISODate,
+  live: Account[],
+  transactions: Transaction[],
+  fromAccountId?: ID,
+): Account | undefined {
+  const cards = live.filter((a) => a.kind === 'credit_card' && a.card);
+  if (cards.length <= 1) return cards[0];
+  if (p.otherLast4) {
+    const named = cards.find((c) => c.last4 === p.otherLast4);
+    if (named) return named;
+  }
+  const matches = cards.filter((c) => {
+    try {
+      const snap = cardSnapshot(c, transactions, date);
+      return [snap.lastStatement.totalDue, snap.dueNow, snap.owed].includes(amount);
+    } catch {
+      return false;
+    }
+  });
+  if (matches.length === 1) return matches[0];
+  const pool = matches.length ? matches : cards;
+  const fromHere = pool.filter((c) => fromAccountId && c.card?.paymentAccountId === fromAccountId);
+  return fromHere.length === 1 ? fromHere[0] : undefined;
+}
+
 export function suggest(p: ParsedSms, ctx: Ctx): Suggestion {
   const { account, how } = findAccount(p, ctx.accounts, ctx.accountHints);
   // A message can't describe a payment after the day it arrived (bill reminders, schedules).
@@ -308,11 +343,7 @@ export function suggest(p: ParsedSms, ctx: Ctx): Suggestion {
     mode = 'netbanking';
   } else if (p.kind === 'debit' && p.isCardBillPayment) {
     kind = 'transfer';
-    const cards = live.filter((a) => a.kind === 'credit_card');
-    toAccountId = (
-      cards.find((c) => c.card?.paymentAccountId === accountId) ??
-      (cards.length === 1 ? cards[0] : undefined)
-    )?.id;
+    toAccountId = billCard(p, amount, date, live, ctx.transactions, accountId)?.id;
     merchant = undefined;
   } else if (p.kind === 'debit' && p.isAtm) {
     const cash = live.find((a) => a.kind === 'cash');

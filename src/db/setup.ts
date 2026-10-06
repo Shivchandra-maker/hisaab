@@ -4,13 +4,7 @@ import { discoverAccounts, type FoundAccount } from '../domain/sms/discover';
 import { parseSms, splitMessages } from '../domain/sms/parse';
 import type { Account, ID, ISODate, Paise } from '../domain/types';
 import { stamp } from './db';
-import {
-  addAllReady,
-  CAPTURE_FILTER_VERSION,
-  ingestCaptured,
-  NOTIFICATION_APPS,
-  type CapturedMessage,
-} from './inbox';
+import { addAllReady, ingestCaptured, NOTIFICATION_APPS, type CapturedMessage } from './inbox';
 import { db, getMeta, learnRule, saveAccount, setMeta } from './repo';
 import { refreshCheckpoints } from './checkpoints';
 
@@ -83,7 +77,12 @@ async function calibrate(accountId: ID, amount: Paise, date: ISODate, liability:
 export async function finishSetup(
   choices: SetupChoice[],
   messages: CapturedMessage[],
-  opts: { cash: boolean; onProgress?: (label: string, done: number, total: number) => void },
+  opts: {
+    cash: boolean;
+    onProgress?: (label: string, done: number, total: number) => void;
+    /** Android capture filter the messages were read with (CaptureFilter.VERSION). */
+    filterVersion?: number;
+  },
 ): Promise<SetupResult> {
   const today = todayIST();
   const ids = new Map<string, ID>();
@@ -162,7 +161,8 @@ export async function finishSetup(
 
   await setMeta('onboarded', true);
   await setMeta('quickSetupDone', true);
-  await setMeta('captureFilterVersion', CAPTURE_FILTER_VERSION);
+  // Setup just read the phone's messages through its filter: no need to read them again.
+  if (opts.filterVersion) await setMeta('nativeFilterRead', opts.filterVersion);
   const needYou = await db.inbox.where('status').equals('new').count();
   return { accounts: kept.length + (opts.cash ? 1 : 0), added, needYou };
 }

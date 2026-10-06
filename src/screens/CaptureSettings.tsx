@@ -4,7 +4,13 @@ import { ErrorNote, Panel } from '../design/components';
 import { Icon } from '../design/Icon';
 import { NOTIFICATION_APPS } from '../db/inbox';
 import { setMeta } from '../db/repo';
-import { Capture, isAndroidApp, requestContacts, type CaptureStatus } from '../native/capture';
+import {
+  Capture,
+  EXPECTED_NATIVE_VERSION,
+  isAndroidApp,
+  type CaptureStatus,
+} from '../native/capture';
+import { ContactsAllow } from './ContactsAllow';
 import { QuickSetup } from './QuickSetup';
 import { useStore } from '../store';
 
@@ -85,6 +91,15 @@ export function CaptureSettings() {
   return (
     <Panel title="Automatic capture">
       <div className="stack">
+        {s && (s.nativeVersion ?? 0) < EXPECTED_NATIVE_VERSION && (
+          // The web part updated but the Android part didn't (android/ files missing from the
+          // upload): contacts, the wider SMS filter and detailed notifications aren't there yet.
+          <div className="note note-warn">
+            <b>Android part out of date</b> (v{s.nativeVersion ?? 1}, needs v
+            {EXPECTED_NATIVE_VERSION}). Contacts, the latest SMS reading and detailed payment
+            notifications need the newest APK built with the <code>android</code> folder.
+          </div>
+        )}
         <div className="list">
           <div className="item" style={{ flexWrap: 'wrap' }}>
             <div className="item-main">
@@ -157,26 +172,14 @@ export function CaptureSettings() {
                 Only payments to people in your contacts ask “Spent or lent?”. Read on this phone.
               </div>
             </div>
-            {s?.contacts ? (
-              <Check on />
-            ) : (
-              <button
-                className="btn btn-primary"
-                onClick={async () => {
-                  await requestContacts();
-                  void refresh();
-                }}
-              >
-                Allow
-              </button>
-            )}
+            {s?.contacts ? <Check on /> : <ContactsAllow onGranted={() => void refresh()} />}
           </div>
 
           <div className="item" style={{ flexWrap: 'wrap' }}>
             <div className="item-main">
               <div className="item-title">Tell me when a payment is captured</div>
               <div className="item-sub">
-                A quiet notification: “New payment · ₹250 — tap to review”.
+                The moment a bank SMS arrives: “₹250 to Swiggy · HDFC Bank ••4521”.
               </div>
             </div>
             <button

@@ -112,41 +112,112 @@ export async function resolvePersonPayment(txnId: ID, person: string, choice: Pe
 }
 
 /**
- * Split one captured payment: your share stays spending, the rest is lent to friends
- * (e.g. dinner ₹1,200: ₹400 mine, ₹400 each lent to two friends).
+ * Paid for other people (U-21): a dinner, tickets, a group order. Each person's part becomes money
+ * lent to them; your own part (if any) stays spending. The payment that left your account keeps
+ * its full amount on the account and card bill — only what counts as *your* spending changes.
+ *   Croma ₹12,000 = you ₹4,000 + Priya ₹8,000  → expense ₹4,000 (of ₹12,000) + lent ₹8,000.
+ *   Tickets ₹3,000 for Asha and Ravi, nothing for you → two loans of ₹1,500, no spending.
  */
+export async function paidForOthers(
+  txnId: ID,
+  shares: { person: string; amount: number }[],
+): Promise<void> {
+  const t = await db.transactions.get(txnId);
+  if (!t) throw new Error('Transaction not found.');
+  if (t.kind !== 'expense') throw new Error('Only a payment you made can be split.');
+  if (t.grossAmount) throw new Error('This payment is already shared with others.');
+  const clean = shares.map((x) => ({ person: x.person.trim(), amount: Math.round(x.amount) }));
+  if (!clean.length) throw new Error('Add at least one person.');
+  if (clean.some((x) => !x.person || x.amount <= 0))
+    throw new Error('Each person needs a name and an amount.');
+  const keys = clean.map((x) => personKey(x.person));
+  if (new Set(keys).size !== keys.length) throw new Error('Each person only once.');
+  const lent = clean.reduce((n, x) => n + x.amount, 0);
+  if (lent > t.amount) throw new Error('The parts add up to more than you paid.');
+  const mine = t.amount - lent;
+  const now = stamp();
+  const debtRow = async (person: string, amount: number) => {
+    const debt = await findOrStartDebt(person, 'lent');
+    return {
+      debt,
+      row: {
+        kind: 'debt' as const,
+        flow: 'out' as const,
+        debtId: debt.id,
+        date: t.date,
+        time: t.time,
+        amount,
+        accountId: t.accountId,
+        paymentMode: t.paymentMode,
+        splitOf: t.id,
+        note: `Lent to ${debt.person} · paid for them${t.merchant ? ` at ${t.merchant}` : ''}`,
+        tags: [],
+        source: t.source,
+        status: 'confirmed' as const,
+        createdAt: now,
+        updatedAt: now,
+      },
+    };
+  };
+  const touched: ID[] = [];
+  let rest = clean;
+  if (mine > 0) {
+    // Your share stays the spending row; the full amount is kept for display.
+    await db.transactions.put({
+      ...t,
+      amount: mine,
+      grossAmount: t.amount,
+      splits: undefined,
+      askLoan: false,
+      updatedAt: now,
+    });
+  } else {
+    // Nothing was yours: the payment itself becomes the first person's loan.
+    const [first, ...others] = clean;
+    const { debt, row } = await debtRow(first!.person, first!.amount);
+    await db.transactions.put({
+      ...t,
+      ...row,
+      id: t.id,
+      createdAt: t.createdAt,
+      merchant: t.merchant,
+      rawText: t.rawText,
+      externalRef: t.externalRef,
+      splitOf: undefined,
+      grossAmount: others.length ? t.amount : undefined,
+      categoryId: undefined,
+      splits: undefined,
+      askLoan: undefined,
+    });
+    touched.push(debt.id);
+    rest = others;
+  }
+  for (const x of rest) {
+    const { debt, row } = await debtRow(x.person, x.amount);
+    await db.transactions.add({ id: newId(), ...row });
+    touched.push(debt.id);
+  }
+  for (const id of new Set(touched)) await refreshDebtSettlement(id);
+}
+
+/** Older name: friends' shares of a payment where part was yours. */
 export async function splitWithFriends(
   txnId: ID,
   shares: { person: string; amount: number }[],
 ): Promise<void> {
   const t = await db.transactions.get(txnId);
   if (!t) throw new Error('Transaction not found.');
-  const lent = shares.reduce((s, x) => s + x.amount, 0);
-  if (shares.some((x) => x.amount <= 0 || !x.person.trim()))
-    throw new Error('Each friend needs a name and an amount.');
-  if (lent >= t.amount) throw new Error('Friends’ shares must be less than the total.');
-  const now = stamp();
-  await db.transactions.put({ ...t, amount: t.amount - lent, askLoan: undefined, updatedAt: now });
-  for (const x of shares) {
-    const debt = await findOrStartDebt(x.person, 'lent');
-    await db.transactions.add({
-      id: newId(),
-      kind: 'debt',
-      flow: 'out',
-      debtId: debt.id,
-      date: t.date,
-      amount: x.amount,
-      accountId: t.accountId,
-      paymentMode: t.paymentMode,
-      note: `Lent to ${debt.person} (split of ${t.merchant ?? 'a payment'})`,
-      tags: [],
-      source: t.source,
-      status: 'confirmed',
-      createdAt: now,
-      updatedAt: now,
-    });
-    await refreshDebtSettlement(debt.id);
-  }
+  if (shares.reduce((s, x) => s + x.amount, 0) >= t.amount)
+    throw new Error('Friends’ shares must be less than the total.');
+  return paidForOthers(txnId, shares);
+}
+
+/** Equal parts in paise; the odd paise go to the first people so the parts add up exactly. */
+export function equalParts(total: number, n: number): number[] {
+  if (n <= 0) return [];
+  const base = Math.floor(total / n);
+  const extra = total - base * n;
+  return Array.from({ length: n }, (_, i) => base + (i < extra ? 1 : 0));
 }
 
 /** Everything waiting for one person was ordinary spending/income: answer them all at once. */

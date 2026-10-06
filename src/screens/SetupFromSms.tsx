@@ -28,6 +28,7 @@ export function SetupFromSms({ onBack }: { onBack: () => void }) {
   const [messages, setMessages] = useState<CapturedMessage[]>([]);
   const [found, setFound] = useState<FoundAccount[]>([]);
   const [progress, setProgress] = useState<{ label: string; done: number; total: number }>();
+  const [filterVersion, setFilterVersion] = useState<number>();
 
   const scan = (msgs: CapturedMessage[]) => {
     setMessages(msgs);
@@ -40,6 +41,7 @@ export function SetupFromSms({ onBack }: { onBack: () => void }) {
     setStep('reading');
     try {
       let st = await Capture.status();
+      setFilterVersion(st.filterVersion ?? 1);
       if (!st.sms) st = await Capture.requestSms();
       if (!st.sms) {
         setError('Hisaab needs permission to read bank SMS. Personal messages are never read.');
@@ -47,7 +49,7 @@ export function SetupFromSms({ onBack }: { onBack: () => void }) {
         return;
       }
       // Contacts tell friends from shops, so "Spent or lent?" is only asked about people you know.
-      await requestContacts().catch(() => false);
+      await requestContacts().catch(() => 'denied');
       const { messages: msgs } = await Capture.readInbox({
         sinceMs: Date.now() - SCAN_DAYS * 86_400_000,
         limit: 20_000,
@@ -148,6 +150,7 @@ export function SetupFromSms({ onBack }: { onBack: () => void }) {
           go('sort');
           await finishSetup(choices, messages, {
             cash,
+            filterVersion,
             onProgress: (label, done, total) => setProgress({ label, done, total }),
           });
         } catch (e) {
