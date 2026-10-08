@@ -43,7 +43,7 @@ import java.util.Set;
  *   readInbox({sinceMs})     → bank messages already on the phone, for a one-time import
  *   getPending() / ack({ids})→ the capture queue filled while the app was closed
  *   setOptions({apps, notify})
- *   takeRoute()              → "inbox" when the app was opened from a capture notification
+ *   takeRoute()              → "capture" when the app was opened from a capture notification
  *   requestContacts() / readContacts() → names + phone numbers, to tell friends from shops
  *   openAppSettings()        → Hisaab's App info page (a permission was blocked with "Don't allow")
  *   setBars({dark})          → status/navigation bar colours to match the app's theme
@@ -59,8 +59,9 @@ public class CapturePlugin extends Plugin {
     /**
      * Version of this Android part. The web app shows it in Settings and uses it to notice an APK
      * built without the latest Android files. 3 = contacts, wide filter, detailed notifications.
+     * 4 = notification tap opens the payment (route event), import reads the full range.
      */
-    public static final int NATIVE_VERSION = 3;
+    public static final int NATIVE_VERSION = 4;
 
     private static CapturePlugin instance;
 
@@ -73,6 +74,15 @@ public class CapturePlugin extends Plugin {
     public static void notifyCaptured() {
         CapturePlugin p = instance;
         if (p != null) p.notifyListeners("captured", new JSObject(), true);
+    }
+
+    /**
+     * A notification was tapped while the app was already open. Android delivers that as a new
+     * intent without pausing the app, so no "resume" reaches the web app — tell it directly.
+     */
+    static void notifyRoute() {
+        CapturePlugin p = instance;
+        if (p != null) p.notifyListeners("route", new JSObject(), true);
     }
 
     private boolean smsGranted() {
@@ -197,7 +207,8 @@ public class CapturePlugin extends Plugin {
             Window w = getActivity().getWindow();
             int color = dark ? 0xFF0E1412 : 0xFFF6F8F7; // tokens.css --bg
             w.setStatusBarColor(color);
-            w.setNavigationBarColor(color);
+            // White navigation buttons only before 8.1: keep that bar dark there.
+            w.setNavigationBarColor(Build.VERSION.SDK_INT >= 27 ? color : 0xFF0E1412);
             WindowInsetsControllerCompat c = WindowCompat.getInsetsController(w, w.getDecorView());
             c.setAppearanceLightStatusBars(!dark);
             c.setAppearanceLightNavigationBars(!dark);
@@ -224,7 +235,9 @@ public class CapturePlugin extends Plugin {
             call.reject("SMS permission is not granted");
             return;
         }
-        long since = (long) call.getDouble("sinceMs", (double) (System.currentTimeMillis() - 30L * 86_400_000L)).doubleValue();
+        // optLong, not getDouble: a millisecond timestamp arrives as a Long, which getDouble
+        // silently ignores — every import fell back to 30 days ("1 year" included).
+        long since = call.getData().optLong("sinceMs", System.currentTimeMillis() - 30L * 86_400_000L);
         int limit = call.getInt("limit", 3000);
         JSArray out = new JSArray();
         ContentResolver cr = getContext().getContentResolver();

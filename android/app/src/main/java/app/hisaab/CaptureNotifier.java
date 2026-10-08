@@ -37,8 +37,10 @@ public final class CaptureNotifier {
             }
         }
         Intent open = new Intent(ctx, MainActivity.class);
-        open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        open.putExtra("route", "transactions");
+        open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        // The web app files the new message, then opens it — or the Inbox if it needs a look.
+        open.putExtra("route", "capture");
         PendingIntent pi = PendingIntent.getActivity(
                 ctx, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
@@ -55,7 +57,15 @@ public final class CaptureNotifier {
                 .setShowWhen(true)
                 .setContentIntent(pi)
                 .setAutoCancel(true)
-                .setOnlyAlertOnce(true)
+                // Every new payment alerts (a second debit could be fraud), not only the first.
+                .setOnlyAlertOnce(false)
+                // Lock screen shows "New payment" only; payee and card digits after unlock.
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPublicVersion(new NotificationCompat.Builder(ctx, CHANNEL)
+                        .setSmallIcon(R.drawable.ic_stat_hisaab)
+                        .setContentTitle("New payment")
+                        .setContentText("Unlock to see it in Hisaab")
+                        .build())
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT);
         try {
             NotificationManagerCompat.from(ctx).notify(ID, b.build());

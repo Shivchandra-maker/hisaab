@@ -15,7 +15,8 @@
         <item name="android:background">@null</item>
         <!-- Status and navigation bars in the app's background colour, never over the app (U-05/H-07). -->
         <item name="android:statusBarColor">@color/systemBar</item>
-        <item name="android:navigationBarColor">@color/systemBar</item>
+        <!-- Before Android 8.1 navigation buttons are always white, so that bar stays dark. -->
+        <item name="android:navigationBarColor">@color/systemBarDark</item>
         <item name="android:windowLightStatusBar">@bool/lightBars</item>
     </style>
 
