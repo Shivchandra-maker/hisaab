@@ -34,6 +34,7 @@ import { formatINR } from '../domain/money';
 import { Icon } from '../design/Icon';
 import { needsHeadline } from '../db/needs';
 import { useStore } from '../store';
+import { setMeta } from '../db/repo';
 import { useUI } from '../ui';
 import { TxnRow } from './TxnRow';
 import { shopsToSort } from '../domain/sms/shops';
@@ -48,6 +49,7 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
     inboxNew,
     needs,
     rules,
+    meta,
   } = useStore();
   const toSort = useMemo(() => shopsToSort(txns, rules).shops.length, [txns, rules]);
   const { go, openTxn, toast } = useUI();
@@ -142,10 +144,21 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
       )}
 
       <section className="hero" aria-label="Spending this month">
-        <span className="label">
-          {isCurrent ? 'Spent so far in ' : 'Spent in '}
-          {formatMonth(month, 'short')}
-        </span>
+        <div className="row">
+          <span className="label">
+            {isCurrent ? 'Spent so far in ' : 'Spent in '}
+            {formatMonth(month, 'short')}
+          </span>
+          <span className="spacer" />
+          <button
+            className="icon-btn hero-eye"
+            aria-pressed={meta.hideAmounts === true}
+            aria-label={meta.hideAmounts === true ? 'Show amounts' : 'Hide amounts'}
+            onClick={() => void setMeta('hideAmounts', meta.hideAmounts !== true)}
+          >
+            <Icon name={meta.hideAmounts === true ? 'eye-off' : 'eye'} size={18} />
+          </button>
+        </div>
         <span className="hero-amount num" aria-label={formatINR(s.spent)}>
           <span className="cur">{rupee}</span>
           {digits.join('')}

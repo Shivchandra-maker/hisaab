@@ -54,6 +54,12 @@ export function Breakdown({
   const { transactions: txns, categoryById, accountById, today } = useStore();
   const { go } = useUI();
   const [shop, setShop] = useState<string>();
+  // A shop picked in one month or category means nothing in another.
+  const [shopFor, setShopFor] = useState(`${k.by}:${k.id}:${month}`);
+  if (shopFor !== `${k.by}:${k.id}:${month}`) {
+    setShopFor(`${k.by}:${k.id}:${month}`);
+    setShop(undefined);
+  }
   const isCurrent = month === monthOf(today);
   const { start, end } = monthRange(month);
 
@@ -99,7 +105,11 @@ export function Breakdown({
 
   return (
     <div className="page">
-      <BackLink label="Insights" onClick={() => go('insights')} />
+      <BackLink
+        label="Insights"
+        // Back, not a new visit: Android's back button then doesn't return here.
+        onClick={() => (window.history.length > 1 ? window.history.back() : go('insights'))}
+      />
       <div className="page-head">
         <div className="row" style={{ minWidth: 0 }}>
           {cat && <CategoryAvatar category={cat} small />}
@@ -125,7 +135,7 @@ export function Breakdown({
           )}
           {prevTotal > 0 && change !== 0 && (
             <span className={`pill ${change > 0 ? 'pill-warn' : 'pill-ok'}`}>
-              {change > 0 ? '↑' : '↓'} {formatINR(Math.abs(change))} vs{' '}
+              {change > 0 ? '↑' : '↓'} <span className="num">{formatINR(Math.abs(change))}</span> vs{' '}
               {formatMonth(prevMonth, 'short')}
               {isCurrent ? ' by now' : ''}
             </span>
@@ -141,7 +151,7 @@ export function Breakdown({
         />
       </section>
 
-      {shops.length > 1 && (
+      {(shops.length > 1 || shop) && (
         <div className="chips scroll" role="group" aria-label="Where">
           <button className="chip" aria-pressed={!shop} onClick={() => setShop(undefined)}>
             All
@@ -155,7 +165,7 @@ export function Breakdown({
                 setShop(shop === s.name.toLowerCase() ? undefined : s.name.toLowerCase())
               }
             >
-              {s.name} · {formatINR(s.amount)}
+              {s.name} · <span className="num">{formatINR(s.amount)}</span>
             </button>
           ))}
         </div>

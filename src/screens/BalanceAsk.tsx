@@ -119,7 +119,16 @@ export function BalanceAsk({ account, today }: { account: Account; today: string
                 <button className="btn btn-primary" onClick={save}>
                   Save
                 </button>
-                <button className="btn" onClick={() => setEditing(false)}>
+                <button
+                  className="btn"
+                  // Throw away what was typed: the next edit starts from what's saved.
+                  onClick={() => {
+                    setSms(c.sms ?? '');
+                    setText(c.text ?? '');
+                    setCall(c.call ?? '');
+                    setEditing(false);
+                  }}
+                >
                   Cancel
                 </button>
               </div>
@@ -128,11 +137,21 @@ export function BalanceAsk({ account, today }: { account: Account; today: string
             <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center' }}>
               <span className="faint" style={{ flex: 1, fontSize: 'var(--fs-sm)' }}>
                 {c.sms
-                  ? `SMS “${c.text ?? ''}” to ${c.sms}.`
+                  ? c.text
+                    ? `SMS “${c.text}” to ${c.sms}.`
+                    : `SMS to ${c.sms}.`
                   : `We don’t have ${bank}’s balance SMS number yet.`}
                 {c.call ? ` Missed call: ${c.call}.` : ''}
               </span>
-              <button className="link-btn" onClick={() => setEditing(true)}>
+              <button
+                className="link-btn"
+                onClick={() => {
+                  setSms(c.sms ?? '');
+                  setText(c.text ?? '');
+                  setCall(c.call ?? '');
+                  setEditing(true);
+                }}
+              >
                 {c.known ? 'Change numbers' : 'Add numbers'}
               </button>
             </div>

@@ -4,6 +4,7 @@ import { Icon } from '../design/Icon';
 import { exportBackup, importBackup, resetAll, setMeta } from '../db/repo';
 import { requestPersistentStorage, storageIsPersistent } from '../db/persist';
 import { useStore } from '../store';
+import { setDemo } from '../db/demo';
 import { CaptureSettings } from './CaptureSettings';
 import { setSystemBars } from '../native/capture';
 import { useUI } from '../ui';
@@ -20,7 +21,7 @@ export function applyTheme(theme: Theme) {
 }
 
 export function Settings() {
-  const { meta, isSample, accounts, transactions, categories, rules } = useStore();
+  const { meta, isSample, isDemo, accounts, transactions, categories, rules } = useStore();
   const { go, toast } = useUI();
   const [backupText, setBackupText] = useState('');
   const [importText, setImportText] = useState('');
@@ -134,6 +135,41 @@ export function Settings() {
             { value: 'dark', label: 'Dark' },
           ]}
         />
+      </Panel>
+
+      <Panel title="Showing Hisaab to someone">
+        <div className="stack">
+          <label className="toggle-row">
+            <span className="stack" style={{ gap: 2 }}>
+              <b>Hide amounts</b>
+              <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
+                Blurs totals, balances and payments. Tap the eye on Home to switch quickly.
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              className="switch"
+              checked={meta.hideAmounts === true}
+              onChange={(e) => void setMeta('hideAmounts', e.target.checked)}
+            />
+          </label>
+          <label className="toggle-row">
+            <span className="stack" style={{ gap: 2 }}>
+              <b>Show sample data</b>
+              <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
+                {isDemo
+                  ? 'Made-up accounts and payments are showing. Your own data is safe and comes back when you turn this off.'
+                  : 'Swap in made-up accounts and payments. Your own data stays untouched; new bank messages wait until you switch back.'}
+              </span>
+            </span>
+            <input
+              type="checkbox"
+              className="switch"
+              checked={isDemo}
+              onChange={(e) => setDemo(e.target.checked)}
+            />
+          </label>
+        </div>
       </Panel>
 
       <Panel title="Display">
@@ -289,26 +325,28 @@ export function Settings() {
         </div>
       </Panel>
 
-      <Panel title={isSample ? 'Sample data' : 'Start over'}>
-        <div className="stack">
-          <p className="muted" style={{ margin: 0 }}>
-            {isSample
-              ? 'You’re exploring with sample data. Clear it to set up your own accounts.'
-              : 'Deletes all accounts and transactions on this device. Download a backup first.'}
-          </p>
-          <div>
-            <ConfirmButton
-              label={isSample ? 'Clear sample data and start fresh' : 'Delete everything'}
-              confirmLabel="Tap again to delete all data"
-              onConfirm={async () => {
-                await resetAll();
-                toast('All data cleared');
-                go('home');
-              }}
-            />
+      {!isDemo && (
+        <Panel title={isSample ? 'Sample data' : 'Start over'}>
+          <div className="stack">
+            <p className="muted" style={{ margin: 0 }}>
+              {isSample
+                ? 'You’re exploring with sample data. Clear it to set up your own accounts.'
+                : 'Deletes all accounts and transactions on this device. Download a backup first.'}
+            </p>
+            <div>
+              <ConfirmButton
+                label={isSample ? 'Clear sample data and start fresh' : 'Delete everything'}
+                confirmLabel="Tap again to delete all data"
+                onConfirm={async () => {
+                  await resetAll();
+                  toast('All data cleared');
+                  go('home');
+                }}
+              />
+            </div>
           </div>
-        </div>
-      </Panel>
+        </Panel>
+      )}
       <p className="faint" style={{ margin: 0, fontSize: 'var(--fs-xs)' }}>
         Hisaab · data stays on this device
       </p>

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ErrorNote, Segmented } from '../design/components';
+import { ConfirmButton, ErrorNote, Segmented } from '../design/components';
 import { Icon } from '../design/Icon';
-import { cleanAmountInput, formatINR, toPaise, toRupees } from '../domain/money';
+import { cleanAmountInput, formatINR, safePaise, toRupees } from '../domain/money';
 import { contactsLoaded, isContact, suggestPeople } from '../domain/people';
 import type { Transaction } from '../domain/types';
-import { equalParts, paidForOthers } from '../db/loans';
+import { equalParts, paidForOthers, unsplit } from '../db/loans';
 import { isAndroidApp } from '../native/capture';
 import { useStore } from '../store';
 import { useUI } from '../ui';
@@ -30,12 +30,15 @@ export function PaidForOthers({
   txn,
   total,
   onPending,
+  onDone,
 }: {
   txn: Transaction;
   /** The amount as currently typed in the sheet (it may differ from the saved one). */
   total: number;
   /** Tells the sheet what Save should also do; null when nothing is set up. */
   onPending: (p: PendingSplit | null) => void;
+  /** Close the sheet after "Undo split". */
+  onDone?: () => void;
 }) {
   const { debts } = useStore();
   const { toast } = useUI();
@@ -59,7 +62,8 @@ export function PaidForOthers({
       return Object.fromEntries(names.map((n, i) => [n, eq[i] ?? 0])) as Record<string, number>;
     }
     const out: Record<string, number> = {};
-    for (const p of people) out[p] = custom[p] ? toPaise(custom[p]!) : 0;
+    // Half-typed amounts (".", "") count as ₹0 rather than breaking the screen.
+    for (const p of people) out[p] = safePaise(custom[p] ?? '');
     if (withMe) out.me = Math.max(0, total - people.reduce((n, p) => n + (out[p] ?? 0), 0));
     return out;
   }, [people, withMe, mode, custom, total]);
@@ -95,9 +99,27 @@ export function PaidForOthers({
 
   if (txn.grossAmount)
     return (
-      <p className="muted" style={{ margin: 0, fontSize: 'var(--fs-sm)' }}>
-        You paid {formatINR(txn.grossAmount)}; {formatINR(txn.amount)} was yours. The rest is in
-        Lent &amp; borrowed.
+      <div className="row" style={{ flexWrap: 'wrap', gap: 'var(--sp-2)' }}>
+        <p className="muted" style={{ margin: 0, fontSize: 'var(--fs-sm)', flex: '1 1 220px' }}>
+          You paid {formatINR(txn.grossAmount)};{' '}
+          {txn.amount ? `${formatINR(txn.amount)} was yours` : 'none of it was yours'}. Friends’
+          parts are in Lent &amp; borrowed — tap one there to change it.
+        </p>
+        <ConfirmButton
+          label="Undo split"
+          confirmLabel="Tap again: all of it is yours"
+          onConfirm={async () => {
+            await unsplit(txn.id);
+            toast(`${formatINR(txn.grossAmount!)} is your spending again`);
+            onDone?.();
+          }}
+        />
+      </div>
+    );
+  if ((txn.splits?.length ?? 0) > 1)
+    return (
+      <p className="faint" style={{ margin: 0, fontSize: 'var(--fs-xs)' }}>
+        Paid for someone? Remove the category split first.
       </p>
     );
   if (!open)
@@ -157,22 +179,25 @@ export function PaidForOthers({
             onKeyDown={(e) => {
               if (e.key === 'Enter' || e.key === ',') {
                 e.preventDefault();
-                add(suggestions[0] ?? query);
+                // What you typed, unless it's exactly a known name — never a guess like
+                // "Ram" → "Ramesh". Pick a suggestion by tapping it.
+                const typed = query.trim().toLowerCase();
+                add(suggestions.find((n) => n.toLowerCase() === typed) ?? query);
               } else if (e.key === 'Backspace' && !query && people.length)
                 remove(people[people.length - 1]!);
             }}
           />
         </div>
         {query.trim() && (
-          <div className="pfo-suggest" role="listbox" aria-label="Suggestions">
+          <div className="pfo-suggest" role="group" aria-label="Suggestions">
             {suggestions.map((n) => (
-              <button key={n} role="option" aria-selected="false" onClick={() => add(n)}>
+              <button key={n} onClick={() => add(n)}>
                 <Icon name={isContact(n) ? 'user' : 'transfer'} size={14} />
                 {n}
               </button>
             ))}
             {!suggestions.some((n) => n.toLowerCase() === query.trim().toLowerCase()) && (
-              <button role="option" aria-selected="false" onClick={() => add(query)}>
+              <button onClick={() => add(query)}>
                 <Icon name="plus" size={14} />
                 Add “{query.trim()}”<span className="faint"> · not in contacts</span>
               </button>

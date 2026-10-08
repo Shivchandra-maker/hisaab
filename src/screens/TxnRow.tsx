@@ -107,16 +107,24 @@ export function TxnRow({
 
   // Recorded but not your spending (U-18): lent, transfers, card bills, adjustments — and
   // investments if you chose so. Faded so the spending stands out; nothing is hidden.
+  // Investments are never spending, so they're always tagged; fading them is your choice.
   const invest =
     t.kind === 'expense' &&
-    meta.fadeInvestments === true &&
-    (t.categoryId === INVESTMENTS || t.splits?.every((p) => p.categoryId === INVESTMENTS));
+    (t.categoryId === INVESTMENTS || !!t.splits?.every((p) => p.categoryId === INVESTMENTS));
+  // A payment made entirely for others (₹0 of it yours) isn't your spending either.
+  const allLent = t.kind === 'expense' && !!t.grossAmount && t.amount === 0;
   const notSpending =
-    t.kind === 'transfer' || t.kind === 'debt' || t.kind === 'adjustment' || invest;
+    t.kind === 'transfer' ||
+    t.kind === 'debt' ||
+    t.kind === 'adjustment' ||
+    allLent ||
+    (invest && meta.fadeInvestments === true);
   const fade = notSpending && meta.fadeNonSpending !== false;
   const tag =
     t.kind === 'expense' && t.grossAmount
-      ? `of ${formatINR(t.grossAmount)} paid`
+      ? allLent
+        ? `${formatINR(t.grossAmount)} · all lent`
+        : `of ${formatINR(t.grossAmount)} paid`
       : t.kind === 'debt'
         ? t.flow === 'in'
           ? 'not income'

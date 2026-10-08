@@ -1,10 +1,21 @@
 import { debtBalance } from '../domain/ledger';
-import type { Debt, ID, Transaction } from '../domain/types';
+import type { Debt, ID, ISODate, Paise, Transaction } from '../domain/types';
+import { formatINR } from '../domain/money';
 import { newId, stamp } from './db';
 import { parseSms } from '../domain/sms/parse';
 import { todayIST } from '../domain/dates';
 import { loanFlows, personKey, shouldAskLoan, type PersonAnswers } from './inbox';
-import { db, getMeta, refreshDebtSettlement, setMeta } from './repo';
+import {
+  db,
+  deleteTransaction,
+  dropEmptyDebts,
+  getMeta,
+  refreshDebtSettlement,
+  setMeta,
+  splitPartsOf,
+  validateTransaction,
+  ValidationError,
+} from './repo';
 
 /**
  * Captured payments to or from people. The bank SMS is the one record of the money moving;
@@ -113,91 +124,169 @@ export async function resolvePersonPayment(txnId: ID, person: string, choice: Pe
 
 /**
  * Paid for other people (U-21): a dinner, tickets, a group order. Each person's part becomes money
- * lent to them; your own part (if any) stays spending. The payment that left your account keeps
- * its full amount on the account and card bill — only what counts as *your* spending changes.
+ * lent to them; your own part (if any) stays spending. The payment itself stays one row with the
+ * full amount in `grossAmount`, so the account, card bill and duplicate checks still see what the
+ * bank saw; only what counts as *your* spending changes.
  *   Croma ₹12,000 = you ₹4,000 + Priya ₹8,000  → expense ₹4,000 (of ₹12,000) + lent ₹8,000.
- *   Tickets ₹3,000 for Asha and Ravi, nothing for you → two loans of ₹1,500, no spending.
+ *   Tickets ₹3,000 for Asha and Ravi, nothing for you → expense ₹0 (of ₹3,000) + two loans of ₹1,500.
  */
 export async function paidForOthers(
   txnId: ID,
   shares: { person: string; amount: number }[],
 ): Promise<void> {
-  const t = await db.transactions.get(txnId);
-  if (!t) throw new Error('Transaction not found.');
-  if (t.kind !== 'expense') throw new Error('Only a payment you made can be split.');
-  if (t.grossAmount) throw new Error('This payment is already shared with others.');
   const clean = shares.map((x) => ({ person: x.person.trim(), amount: Math.round(x.amount) }));
   if (!clean.length) throw new Error('Add at least one person.');
   if (clean.some((x) => !x.person || x.amount <= 0))
     throw new Error('Each person needs a name and an amount.');
   const keys = clean.map((x) => personKey(x.person));
   if (new Set(keys).size !== keys.length) throw new Error('Each person only once.');
-  const lent = clean.reduce((n, x) => n + x.amount, 0);
-  if (lent > t.amount) throw new Error('The parts add up to more than you paid.');
-  const mine = t.amount - lent;
-  const now = stamp();
-  const debtRow = async (person: string, amount: number) => {
-    const debt = await findOrStartDebt(person, 'lent');
-    return {
-      debt,
-      row: {
-        kind: 'debt' as const,
-        flow: 'out' as const,
+  const touched: ID[] = [];
+  // One database transaction: a double tap can't lend twice.
+  await db.transaction('rw', db.transactions, db.debts, async () => {
+    const t = await db.transactions.get(txnId);
+    if (!t || t.deletedAt) throw new Error('Transaction not found.');
+    if (t.kind !== 'expense') throw new Error('Only a payment you made can be split.');
+    if (t.grossAmount) throw new Error('This payment is already shared with others.');
+    if ((t.splits?.length ?? 0) > 1)
+      throw new Error('This payment is split across categories. Remove that split first.');
+    const lent = clean.reduce((n, x) => n + x.amount, 0);
+    if (lent > t.amount) throw new Error('The parts add up to more than you paid.');
+    const now = stamp();
+    await db.transactions.put({
+      ...t,
+      amount: t.amount - lent,
+      grossAmount: t.amount,
+      splits: undefined,
+      askLoan: false,
+      updatedAt: now,
+    });
+    for (const x of clean) {
+      const debt = await findOrStartDebt(x.person, 'lent');
+      await db.transactions.add({
+        id: newId(),
+        kind: 'debt',
+        flow: 'out',
         debtId: debt.id,
         date: t.date,
         time: t.time,
-        amount,
+        amount: x.amount,
         accountId: t.accountId,
         paymentMode: t.paymentMode,
         splitOf: t.id,
         note: `Lent to ${debt.person} · paid for them${t.merchant ? ` at ${t.merchant}` : ''}`,
         tags: [],
         source: t.source,
-        status: 'confirmed' as const,
+        status: 'confirmed',
         createdAt: now,
         updatedAt: now,
-      },
-    };
-  };
-  const touched: ID[] = [];
-  let rest = clean;
-  if (mine > 0) {
-    // Your share stays the spending row; the full amount is kept for display.
-    await db.transactions.put({
-      ...t,
-      amount: mine,
-      grossAmount: t.amount,
-      splits: undefined,
-      askLoan: false,
-      updatedAt: now,
-    });
-  } else {
-    // Nothing was yours: the payment itself becomes the first person's loan.
-    const [first, ...others] = clean;
-    const { debt, row } = await debtRow(first!.person, first!.amount);
-    await db.transactions.put({
-      ...t,
-      ...row,
-      id: t.id,
-      createdAt: t.createdAt,
-      merchant: t.merchant,
-      rawText: t.rawText,
-      externalRef: t.externalRef,
-      splitOf: undefined,
-      grossAmount: others.length ? t.amount : undefined,
-      categoryId: undefined,
-      splits: undefined,
-      askLoan: undefined,
-    });
-    touched.push(debt.id);
-    rest = others;
-  }
-  for (const x of rest) {
-    const { debt, row } = await debtRow(x.person, x.amount);
-    await db.transactions.add({ id: newId(), ...row });
-    touched.push(debt.id);
-  }
+      });
+      touched.push(debt.id);
+    }
+  });
   for (const id of new Set(touched)) await refreshDebtSettlement(id);
+}
+
+/** Undo "paid for others": the whole payment is your spending again; friends' parts go. */
+export async function unsplit(txnId: ID): Promise<void> {
+  const parts = await splitPartsOf(txnId);
+  for (const x of parts) await deleteTransaction(x.id);
+  await dropEmptyDebts(parts.map((x) => x.debtId));
+}
+
+/**
+ * Change a lent / borrowed / paid-back entry: amount, account, date, time, note, or the person.
+ * A friend's part of a shared payment only changes its amount, person and note — its account and
+ * date follow the payment, and the difference moves to (or from) your own share.
+ */
+export async function updateLoanEntry(
+  id: ID,
+  patch: {
+    amount: Paise;
+    accountId: ID;
+    date: ISODate;
+    time?: string;
+    note?: string;
+    person: string;
+  },
+): Promise<void> {
+  const t = await db.transactions.get(id);
+  if (!t || t.kind !== 'debt' || t.deletedAt) throw new ValidationError('Entry not found.');
+  const debt = t.debtId ? await db.debts.get(t.debtId) : undefined;
+  if (!debt) throw new ValidationError('Entry not found.');
+  const person = patch.person.trim();
+  if (!person) throw new ValidationError('Enter the person’s name.');
+  if (!Number.isInteger(patch.amount) || patch.amount <= 0)
+    throw new ValidationError('Enter an amount above ₹0.');
+  const parent = t.splitOf ? await db.transactions.get(t.splitOf) : undefined;
+  const delta = patch.amount - t.amount;
+  if (parent && !parent.deletedAt && delta > parent.amount)
+    throw new ValidationError(
+      `Only ${formatINR(parent.amount)} of that payment is left to give out.`,
+    );
+
+  // Same person → same record; another person → their open record (or a new one).
+  let debtId = debt.id;
+  if (personKey(person) !== personKey(debt.person)) {
+    debtId = (await findOrStartDebt(person, debt.direction)).id;
+  } else if (person !== debt.person) {
+    await db.debts.update(debt.id, { person, updatedAt: stamp() });
+  }
+  const next: Transaction = {
+    ...t,
+    debtId,
+    amount: patch.amount,
+    note: patch.note?.trim() || t.note,
+    updatedAt: stamp(),
+    ...(parent ? {} : { accountId: patch.accountId, date: patch.date, time: patch.time }),
+  };
+  if (!parent && !next.time) delete next.time;
+  await validateTransaction(next);
+  // Paid back more than is owed? Lending more never is.
+  const isRepayment = (t.flow === 'in') === (debt.direction === 'lent');
+  if (isRepayment) {
+    const target = await db.debts.get(debtId);
+    const others = (await db.transactions.toArray()).filter((x) => x.id !== id);
+    const { outstanding } = debtBalance(target!, others);
+    if (patch.amount > outstanding)
+      throw new ValidationError(`That’s more than the ${formatINR(outstanding)} outstanding.`);
+  }
+  await db.transaction('rw', db.transactions, async () => {
+    await db.transactions.put(next);
+    if (parent && !parent.deletedAt && delta) {
+      const parts = (await splitPartsOf(parent.id)).reduce((n, x) => n + x.amount, 0);
+      await db.transactions.put({
+        ...parent,
+        amount: parent.amount - delta,
+        grossAmount: parent.amount - delta + parts,
+        updatedAt: stamp(),
+      });
+    }
+  });
+  await refreshDebtSettlement(debt.id);
+  if (debtId !== debt.id) await refreshDebtSettlement(debtId);
+  await dropEmptyDebts([debt.id]);
+}
+
+/**
+ * "Not a loan": a payment answered as lent / borrowed / paid back by mistake becomes ordinary
+ * spending or income again. A friend's part of a shared payment goes back into your share.
+ */
+export async function notALoan(id: ID): Promise<'spending' | 'income'> {
+  const t = await db.transactions.get(id);
+  if (!t || t.kind !== 'debt') throw new ValidationError('Entry not found.');
+  if (t.splitOf) {
+    await deleteTransaction(id);
+    await dropEmptyDebts([t.debtId]);
+    return 'spending';
+  }
+  const kind = t.flow === 'in' ? 'income' : 'expense';
+  const back: Transaction = { ...t, kind, askLoan: false, updatedAt: stamp() };
+  delete back.debtId;
+  delete back.flow;
+  await db.transactions.put(back);
+  await refreshDebtSettlement(t.debtId);
+  await dropEmptyDebts([t.debtId]);
+  return kind === 'income' ? 'income' : 'spending';
 }
 
 /** Older name: friends' shares of a payment where part was yours. */

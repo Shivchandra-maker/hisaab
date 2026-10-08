@@ -264,7 +264,9 @@ export async function recheckBillPayments(): Promise<number> {
     const t = all.find((x) => x.id === i.txnId);
     if (!t || t.deletedAt || t.kind !== 'transfer' || t.source !== 'sms') continue;
     const others = all.filter((x) => x.id !== t.id && !x.deletedAt);
-    const card = billCard(i.parsed, t.amount, t.date, live, others, t.accountId);
+    // Strict: move it only when the card number or the exact bill amount says so — a card you
+    // picked yourself is never overruled by a guess.
+    const card = billCard(i.parsed, t.amount, t.date, live, others, t.accountId, true);
     if (card && card.id !== t.toAccountId) {
       await db.transactions.update(t.id, { toAccountId: card.id, updatedAt: stamp() });
       t.toAccountId = card.id;

@@ -17,6 +17,7 @@ import type { Account, PaymentMode, Split, Transaction } from '../domain/types';
 import { deleteTransaction, restoreTransaction, saveTransaction } from '../db/repo';
 import { guessCategory } from '../domain/sms/categorize';
 import { PaidForOthers, type PendingSplit } from './PaidForOthers';
+import { LoanEntrySheet } from './LoanEntrySheet';
 import { useStore } from '../store';
 import { useUI, type TxnDraft } from '../ui';
 
@@ -52,6 +53,8 @@ interface SplitRow {
 export function TxnSheet({ initial, onClose }: { initial?: TxnDraft; onClose: () => void }) {
   const { debts } = useStore();
   const { go } = useUI();
+  if (initial?.kind === 'debt' && initial.id)
+    return <LoanEntrySheet t={initial as Transaction} onClose={onClose} />;
   if (initial?.kind === 'adjustment' || initial?.kind === 'debt') {
     return (
       <SystemTxn
@@ -87,7 +90,9 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
 
   const [tab, setTab] = useState<Tab>(startTab);
   const [refund, setRefund] = useState(initial?.kind === 'refund');
-  const [amount, setAmount] = useState(text(initial?.amount));
+  // Paid for others: the amount here is what you paid in total; friends' parts come off it.
+  const shared = initial?.grossAmount ? initial.grossAmount - (initial.amount ?? 0) : 0;
+  const [amount, setAmount] = useState(text(initial?.grossAmount ?? initial?.amount));
   const [categoryId, setCategoryId] = useState(
     initial?.categoryId ?? (startTab === 'income' ? 'salary' : 'food'),
   );
@@ -202,10 +207,15 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
       categoryId: s.categoryId,
       amount: toPaise(s.amount || '0'),
     }));
+    const paid = toPaise(amount || '0');
+    if (shared && paid < shared)
+      throw new Error(
+        `Friends’ parts add up to ${formatINR(shared)} — the payment can’t be less. Undo the split to change that.`,
+      );
     return {
       ...initial,
       kind,
-      amount: toPaise(amount || '0'),
+      amount: paid - shared,
       date,
       time: time || undefined,
       accountId,
@@ -258,12 +268,38 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
   };
 
   const duplicate = () => {
-    const { id: _id, createdAt: _c, updatedAt: _u, ...rest } = build() as Transaction;
-    void _id;
-    void _c;
-    void _u;
+    // A fresh payment: no bank reference, message or "paid for others" carried over.
+    let draft: Transaction;
+    try {
+      draft = build() as Transaction;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not copy.');
+      return;
+    }
+    const {
+      id: _id,
+      createdAt: _c,
+      updatedAt: _u,
+      grossAmount: _g,
+      splitOf: _s,
+      externalRef: _r,
+      rawText: _t,
+      askLoan: _a,
+      ...rest
+    } = draft;
+    void [_id, _c, _u, _g, _s, _r, _t, _a];
     onClose();
-    setTimeout(() => openTxn({ ...rest, date: today }), 0);
+    setTimeout(
+      () =>
+        openTxn({
+          ...rest,
+          amount: toPaise(amount || '0'),
+          date: today,
+          time: timeIST(),
+          source: 'manual',
+        }),
+      0,
+    );
   };
 
   const cardNote =
@@ -277,16 +313,18 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
 
   return (
     <Sheet title={editing ? 'Edit transaction' : 'Add'} onClose={onClose}>
-      <Segmented<Tab>
-        label="Type"
-        value={tab}
-        onChange={switchTab}
-        options={[
-          { value: 'expense', label: 'Expense' },
-          { value: 'income', label: 'Income' },
-          { value: 'transfer', label: 'Transfer' },
-        ]}
-      />
+      {!shared && (
+        <Segmented<Tab>
+          label="Type"
+          value={tab}
+          onChange={switchTab}
+          options={[
+            { value: 'expense', label: 'Expense' },
+            { value: 'income', label: 'Income' },
+            { value: 'transfer', label: 'Transfer' },
+          ]}
+        />
+      )}
 
       <label className="amount-input" htmlFor="qa-amount">
         <span>₹</span>
@@ -334,7 +372,7 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
           <div className="row">
             <span className="label">Category</span>
             <span className="spacer" />
-            {tab === 'expense' && (
+            {tab === 'expense' && !shared && (
               <button
                 className="btn btn-ghost"
                 style={{ padding: '2px 4px' }}
@@ -614,7 +652,12 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
 
       {cardNote && <div className="note note-cycle">{cardNote}</div>}
       {editing && initial?.kind === 'expense' && initial.id && (
-        <PaidForOthers txn={initial as Transaction} total={total} onPending={setSplit} />
+        <PaidForOthers
+          txn={initial as Transaction}
+          total={total}
+          onPending={setSplit}
+          onDone={onClose}
+        />
       )}
       <ErrorNote message={error} />
       {split && (

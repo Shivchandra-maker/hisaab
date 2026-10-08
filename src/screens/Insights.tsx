@@ -120,7 +120,8 @@ export function Insights({ month, setMonth }: { month: string; setMonth: (m: str
                     {formatINR(Math.max(0, s.spent))}
                   </span>
                   <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
-                    in {daysSoFar} day{daysSoFar === 1 ? '' : 's'} · {s.count} payments
+                    in {daysSoFar} day{daysSoFar === 1 ? '' : 's'} · {s.count} payment
+                    {s.count === 1 ? '' : 's'}
                   </span>
                 </div>
                 <BarChart
@@ -134,6 +135,7 @@ export function Insights({ month, setMonth }: { month: string; setMonth: (m: str
                   dim={weekend}
                   selected={day ? Number(day.slice(8)) - 1 : todayIdx}
                   onSelect={(i) => setDay(`${month}-${String(i + 1).padStart(2, '0')}`)}
+                  lastSelectable={todayIdx}
                   describe={(i) =>
                     `${formatDate(`${month}-${String(i + 1).padStart(2, '0')}`, 'weekday')}: ${formatINR(Math.max(0, daily[i] ?? 0))}`
                   }

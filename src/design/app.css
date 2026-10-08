@@ -2298,3 +2298,20 @@ a.btn.btn-primary {
     grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr));
   }
 }
+
+.sheet:focus {
+  outline: none;
+}
+
+/* Hide amounts (U-26): numbers blur everywhere except while you're editing in a sheet. */
+html[data-private] .num:not(input):not(.sheet .num),
+html[data-private] .item-tag:not(.sheet .item-tag),
+html[data-private] .chart .val,
+html[data-private] .chart .tick {
+  filter: blur(7px);
+  user-select: none;
+}
+.hero-eye {
+  align-self: flex-start;
+  margin-top: -4px;
+}

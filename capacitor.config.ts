@@ -11,6 +11,8 @@ const config: CapacitorConfig = {
   android: {
     // Keep the WebView's storage (your IndexedDB data) across app updates.
     allowMixedContent: false,
+    // Android 15 draws apps under the status bar; keep the app below it.
+    adjustMarginsForEdgeToEdge: 'auto',
   },
   plugins: {
     LocalNotifications: {

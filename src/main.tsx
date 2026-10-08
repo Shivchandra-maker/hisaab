@@ -2,6 +2,7 @@ import { Capacitor } from '@capacitor/core';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { ErrorBoundary } from './design/ErrorBoundary';
 import { StoreProvider } from './store';
 import './design/app.css';
 
@@ -15,9 +16,11 @@ const Loading = () => (
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <StoreProvider loading={<Loading />}>
-      <App />
-    </StoreProvider>
+    <ErrorBoundary>
+      <StoreProvider loading={<Loading />}>
+        <App />
+      </StoreProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );
 

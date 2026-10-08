@@ -7,6 +7,15 @@ export function toPaise(rupees: string | number): Paise {
   return Math.round(n * 100);
 }
 
+/** For half-typed input ("", ".", "1,"): anything that isn't an amount yet counts as ₹0. */
+export function safePaise(rupees: string): Paise {
+  try {
+    return Math.max(0, toPaise(rupees || '0'));
+  } catch {
+    return 0;
+  }
+}
+
 export const toRupees = (p: Paise): number => p / 100;
 
 const grouped = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 });

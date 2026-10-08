@@ -7,6 +7,8 @@ import { backfillTimes, recheckBillPayments, reparseInboxIfNeeded } from './db/i
 import { inboxNeeds, type InboxNeeds } from './db/needs';
 import { requestPersistentStorage } from './db/persist';
 import { db, ensureDefaults } from './db/repo';
+import { seedDemoIfNeeded } from './db/demoSeed';
+import { isDemo } from './db/demo';
 import { todayIST } from './domain/dates';
 import type {
   Account,
@@ -44,6 +46,8 @@ interface Store {
   inboxNew: number;
   rules: MerchantRule[];
   isSample: boolean;
+  /** Showing the separate sample database ("Show sample data" in Settings). */
+  isDemo: boolean;
   onboarded: boolean;
 }
 
@@ -62,11 +66,15 @@ export function StoreProvider({ children, loading }: { children: ReactNode; load
     return () => clearInterval(t);
   }, []);
   const [dbError, setDbError] = useState('');
+  // Sample database: wait until it's filled, so the welcome screen never flashes.
+  const [seeding, setSeeding] = useState(isDemo);
   useEffect(() => {
     // Keep the data safe from the system clearing storage when space runs low.
     void requestPersistentStorage();
     db.open()
       .then(() => ensureDefaults())
+      .then(() => seedDemoIfNeeded())
+      .then(() => setSeeding(false))
       .then(() => reparseInboxIfNeeded())
       .then(() => backfillTimes())
       .then(() => recheckBillPayments())
@@ -137,6 +145,7 @@ export function StoreProvider({ children, loading }: { children: ReactNode; load
       inboxNew: needs.count,
       rules: liveRules,
       isSample: meta.sample === true,
+      isDemo,
       onboarded: meta.onboarded === true,
     };
   }, [today, accounts, categories, transactions, subscriptions, debts, metaRows, inbox, rules]);
@@ -151,7 +160,7 @@ export function StoreProvider({ children, loading }: { children: ReactNode; load
         </p>
       </div>
     );
-  if (!value) return <>{loading}</>;
+  if (!value || seeding) return <>{loading}</>;
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

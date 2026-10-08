@@ -173,7 +173,9 @@ export function findDuplicate(
       return { txn: t, reason: 'Same bank reference' };
   }
   for (const t of transactions) {
-    if (!counted(t) || t.amount !== s.amount) continue;
+    // A payment shared with friends still left the account in full: compare what the bank saw.
+    // Friends' parts (splitOf) are pieces of that payment, never a payment of their own.
+    if (!counted(t) || t.splitOf || (t.grossAmount ?? t.amount) !== s.amount) continue;
     if (Math.abs(daysBetween(t.date, s.date)) > (s.kind === 'transfer' ? 3 : 1)) continue;
     const accounts = [t.accountId, t.toAccountId].filter(Boolean);
     const mine = [s.accountId, s.toAccountId].filter(Boolean);
@@ -283,9 +285,11 @@ export function billCard(
   live: Account[],
   transactions: Transaction[],
   fromAccountId?: ID,
+  /** Only answer on real evidence (card number or the exact bill amount), never a fallback. */
+  strict = false,
 ): Account | undefined {
   const cards = live.filter((a) => a.kind === 'credit_card' && a.card);
-  if (cards.length <= 1) return cards[0];
+  if (cards.length <= 1) return strict ? undefined : cards[0];
   if (p.otherLast4) {
     const named = cards.find((c) => c.last4 === p.otherLast4);
     if (named) return named;
@@ -299,6 +303,7 @@ export function billCard(
     }
   });
   if (matches.length === 1) return matches[0];
+  if (strict) return undefined;
   const pool = matches.length ? matches : cards;
   const fromHere = pool.filter((c) => fromAccountId && c.card?.paymentAccountId === fromAccountId);
   return fromHere.length === 1 ? fromHere[0] : undefined;

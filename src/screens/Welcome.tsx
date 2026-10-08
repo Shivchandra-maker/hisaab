@@ -5,16 +5,14 @@ import { ordinal } from '../domain/dates';
 import { balanceOf } from '../domain/ledger';
 import { formatINR } from '../domain/money';
 import type { AccountKind } from '../domain/types';
-import { loadSample, setMeta } from '../db/repo';
-import { sampleData, sampleMessages } from '../sample/sample';
-import { ingestMessages } from '../db/inbox';
+import { setMeta } from '../db/repo';
+import { setDemo } from '../db/demo';
 import { useStore } from '../store';
 import { useUI } from '../ui';
 import { SetupFromSms } from './SetupFromSms';
 
 /** First run: set up from bank SMS (or pasted messages), by hand, or with sample data. */
 export function Welcome() {
-  const { today } = useStore();
   const [step, setStep] = useState<'hello' | 'accounts' | 'sms'>('hello');
   if (step === 'accounts') return <SetupAccounts />;
   if (step === 'sms') return <SetupFromSms onBack={() => setStep('hello')} />;
@@ -100,10 +98,8 @@ export function Welcome() {
         </button>
         <button
           className="link-btn"
-          onClick={async () => {
-            await loadSample(sampleData(today));
-            await ingestMessages(sampleMessages(today), { source: 'paste', receivedAt: today });
-          }}
+          // A separate sample database: "Back to my data" returns here with nothing to clear.
+          onClick={() => setDemo(true)}
         >
           Try sample data
         </button>

@@ -1,5 +1,6 @@
 import { HisaabDB, newId, stamp } from './db';
 import { defaultCategories } from './defaults';
+import { DB_NAME, DEMO_DB_NAME, isDemo } from './demo';
 import { balanceOf, debtBalance } from '../domain/ledger';
 import { timeIST, todayIST } from '../domain/dates';
 import { isLiability } from '../domain/types';
@@ -21,7 +22,7 @@ import type {
  * All writes go through here: ids, timestamps, soft deletes and validation live in one place.
  * Screens read with live queries (see store.tsx) and write with these functions.
  */
-export const db = new HisaabDB();
+export const db = new HisaabDB(isDemo ? DEMO_DB_NAME : DB_NAME);
 
 type New<T> = Omit<T, 'id' | 'createdAt' | 'updatedAt'> & { id?: ID };
 
@@ -45,7 +46,9 @@ export class ValidationError extends Error {}
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 
 export async function validateTransaction(t: New<Transaction>): Promise<void> {
-  if (!Number.isInteger(t.amount) || t.amount <= 0)
+  // A payment made entirely for others keeps ₹0 as your share (the full amount is grossAmount).
+  const min = t.kind === 'expense' && t.grossAmount ? 0 : 1;
+  if (!Number.isInteger(t.amount) || t.amount < min)
     throw new ValidationError('Enter an amount above ₹0.');
   if (!ISO.test(t.date)) throw new ValidationError('Choose a valid date.');
   const acc = await db.accounts.get(t.accountId);
@@ -91,9 +94,28 @@ export async function saveTransaction(
   )
     await learnRule(clean.merchant, clean.categoryId);
 
-  if (t.id && (await db.transactions.get(t.id))) {
+  const prev = t.id ? await db.transactions.get(t.id) : undefined;
+  if (prev) {
     const updated = { ...(clean as Transaction), updatedAt: stamp() };
-    await db.transactions.put(updated);
+    const parts = await splitPartsOf(prev.id);
+    if (parts.length) {
+      if (updated.kind !== 'expense')
+        throw new ValidationError('This payment is shared with others. Undo the split first.');
+      // The group stays one payment: friends' parts follow its account, date and time.
+      updated.grossAmount = updated.amount + parts.reduce((n, x) => n + x.amount, 0);
+    } else if (prev.grossAmount) delete updated.grossAmount;
+    await db.transaction('rw', db.transactions, async () => {
+      await db.transactions.put(updated);
+      for (const x of parts)
+        await db.transactions.put({
+          ...x,
+          accountId: updated.accountId,
+          date: updated.date,
+          time: updated.time,
+          paymentMode: updated.paymentMode,
+          updatedAt: updated.updatedAt,
+        });
+    });
     return updated;
   }
   // New entries made today without a time say when (U-15): balance corrections, loans and
@@ -136,19 +158,102 @@ export async function deleteRule(id: ID): Promise<void> {
   await db.rules.delete(id);
 }
 
-/** Soft delete so the change can sync later; Undo restores it. */
+/** Friends' parts of a payment you made for them (live debt rows with `splitOf` = id). */
+export async function splitPartsOf(id: ID): Promise<Transaction[]> {
+  return (await db.transactions.toArray()).filter((x) => x.splitOf === id && !x.deletedAt);
+}
+
+/**
+ * Soft delete so the change can sync later; Undo restores it.
+ * Deleting a payment shared with friends deletes their parts with it — the money never left.
+ * Deleting one friend's part keeps the payment whole: that part becomes your spending again.
+ */
 export async function deleteTransaction(id: ID): Promise<void> {
-  await db.transactions.update(id, { deletedAt: stamp(), updatedAt: stamp() });
-  await refreshDebtSettlement((await db.transactions.get(id))?.debtId);
+  const t = await db.transactions.get(id);
+  if (!t || t.deletedAt) return;
+  const now = stamp();
+  const touched = new Set<ID | undefined>([t.debtId]);
+  await db.transaction('rw', db.transactions, async () => {
+    await db.transactions.update(id, { deletedAt: now, updatedAt: now });
+    for (const x of await splitPartsOf(id)) {
+      await db.transactions.update(x.id, { deletedAt: now, updatedAt: now });
+      touched.add(x.debtId);
+    }
+    const parent = t.splitOf ? await db.transactions.get(t.splitOf) : undefined;
+    if (parent && !parent.deletedAt) await regroup(parent, t.amount);
+  });
+  for (const d of touched) await refreshDebtSettlement(d);
+  await dropEmptyDebts([...touched]);
+}
+
+/** A person with no entries left disappears from Lent & borrowed (Undo brings them back). */
+export async function dropEmptyDebts(ids: (ID | undefined)[]) {
+  const txns = await db.transactions.toArray();
+  for (const id of new Set(ids)) {
+    if (!id) continue;
+    if (txns.some((x) => x.debtId === id && !x.deletedAt)) continue;
+    const d = await db.debts.get(id);
+    if (d && !d.deletedAt) await db.debts.put({ ...d, deletedAt: stamp(), updatedAt: stamp() });
+  }
 }
 
 export async function restoreTransaction(id: ID): Promise<void> {
   const t = await db.transactions.get(id);
-  if (!t) return;
-  const rest: Transaction = { ...t };
-  delete rest.deletedAt;
-  await db.transactions.put({ ...rest, updatedAt: stamp() });
-  await refreshDebtSettlement(t.debtId);
+  if (!t || !t.deletedAt) return;
+  const when = t.deletedAt;
+  const touched = new Set<ID | undefined>([t.debtId]);
+  const undelete = async (x: Transaction) => {
+    const rest: Transaction = { ...x, updatedAt: stamp() };
+    delete rest.deletedAt;
+    await db.transactions.put(rest);
+  };
+  await db.transaction('rw', db.transactions, async () => {
+    if (t.splitOf) {
+      // Put the friend's part back: it comes out of your share again. Never on its own while
+      // the payment itself is deleted — that would leave money lent out of nothing.
+      const parent = await db.transactions.get(t.splitOf);
+      if (!parent || parent.deletedAt) return;
+      if (parent.amount < t.amount)
+        throw new ValidationError('That part is more than what’s left of the payment.');
+      await undelete(t);
+      await regroup(parent, -t.amount);
+      return;
+    }
+    await undelete(t);
+    // Parts deleted together with the payment come back with it.
+    for (const x of await db.transactions.toArray())
+      if (x.splitOf === id && x.deletedAt === when) {
+        await undelete(x);
+        touched.add(x.debtId);
+      }
+  });
+  for (const id of touched) {
+    const d = id ? await db.debts.get(id) : undefined;
+    if (d?.deletedAt) {
+      const alive: Debt = { ...d, updatedAt: stamp() };
+      delete alive.deletedAt;
+      await db.debts.put(alive);
+    }
+    await refreshDebtSettlement(id);
+  }
+}
+
+/** Your share of a shared payment grew (+) or shrank (−) by `delta`; total stays the same. */
+async function regroup(parent: Transaction, delta: Paise) {
+  const parts = await splitPartsOf(parent.id);
+  const amount = parent.amount + delta;
+  const updated: Transaction = { ...parent, amount, updatedAt: stamp() };
+  if (parent.splits?.length) {
+    // Category split: the change lands on the biggest part.
+    const splits = parent.splits.map((p) => ({ ...p }));
+    const big = splits.reduce((a, b) => (b.amount > a.amount ? b : a));
+    big.amount += delta;
+    if (big.amount <= 0) throw new ValidationError('Change the category split first.');
+    updated.splits = splits;
+  }
+  if (parts.length) updated.grossAmount = amount + parts.reduce((n, x) => n + x.amount, 0);
+  else delete updated.grossAmount;
+  await db.transactions.put(updated);
 }
 
 /* ───────────────────────── Accounts ───────────────────────── */

@@ -217,6 +217,7 @@ export function BarChart({
   selected,
   describe,
   cap,
+  lastSelectable,
 }: {
   values: Paise[];
   labels: (string | null)[];
@@ -240,6 +241,8 @@ export function BarChart({
    * value written above, so one big day doesn't flatten all the others.
    */
   cap?: Paise;
+  /** Bars after this one can't be picked (days still to come). */
+  lastSelectable?: number;
 }) {
   const [ref, W] = useWidth<HTMLDivElement>();
   const padL = 40;
@@ -264,13 +267,13 @@ export function BarChart({
         width={W}
         height={height}
         viewBox={`0 0 ${W} ${height}`}
-        role="img"
+        role={onSelect ? 'group' : 'img'}
         aria-label={label}
       >
         {ticks.map((t) => (
           <g key={t}>
             <line className="grid" x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} />
-            <text className="axis" x={padL - 6} y={y(t) + 4} textAnchor="end">
+            <text className="axis tick" x={padL - 6} y={y(t) + 4} textAnchor="end">
               {formatINRCompact(t)}
             </text>
           </g>
@@ -283,14 +286,17 @@ export function BarChart({
           const over = capped && v > max;
           const top = over ? padT : y(v);
           const hi = highlight === undefined || highlight === i;
-          const press = onSelect ? () => onSelect(i) : undefined;
+          const pickable = !!onSelect && (lastSelectable === undefined || i <= lastSelectable);
+          const press = pickable ? () => onSelect!(i) : undefined;
+          // One Tab stop for the whole chart; arrow keys move between bars.
+          const focusAt = Math.min(selected ?? 0, lastSelectable ?? values.length - 1);
           return (
             <g
               key={i}
-              className={onSelect ? 'bar-btn' : undefined}
-              role={onSelect ? 'button' : undefined}
-              tabIndex={onSelect ? 0 : undefined}
-              aria-label={onSelect ? (describe?.(i) ?? `${labels[i] ?? i + 1}`) : undefined}
+              className={pickable ? 'bar-btn' : undefined}
+              role={pickable ? 'button' : undefined}
+              tabIndex={pickable ? (i === focusAt ? 0 : -1) : undefined}
+              aria-label={pickable ? (describe?.(i) ?? `${labels[i] ?? i + 1}`) : undefined}
               onClick={press}
               onKeyDown={
                 press
@@ -298,12 +304,19 @@ export function BarChart({
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
                         press();
+                      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+                        e.preventDefault();
+                        const g = e.currentTarget;
+                        const next = (
+                          e.key === 'ArrowLeft' ? g.previousElementSibling : g.nextElementSibling
+                        ) as SVGGElement | null;
+                        if (next?.getAttribute('role') === 'button') next.focus();
                       }
                     }
                   : undefined
               }
             >
-              {onSelect && (
+              {pickable && (
                 <rect className="hit" x={padL + i * step} y={padT} width={step} height={innerH} />
               )}
               <title>{`${labels[i] ?? i + 1}: ${formatINR(v)}`}</title>
@@ -429,7 +442,7 @@ export function Delta({ value, suffix }: { value: Paise; suffix: string }) {
   return (
     <span className={`delta ${up ? 'delta-up' : 'delta-down'}`}>
       <Icon name={up ? 'up' : 'down'} size={13} />
-      {formatINR(Math.abs(value))} {up ? 'more' : 'less'} than {suffix}
+      <span className="num">{formatINR(Math.abs(value))}</span> {up ? 'more' : 'less'} than {suffix}
     </span>
   );
 }
@@ -440,6 +453,17 @@ export function niceMax(v: number): number {
   const f = v / p;
   const n = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
   return n * p;
+}
+
+/** Open sheets, newest last: Android's back button closes the top one before leaving a screen. */
+const openSheets: { close: () => void }[] = [];
+
+/** Close the sheet on top, if any. True when one was closed. */
+export function closeTopSheet(): boolean {
+  const top = openSheets[openSheets.length - 1];
+  if (!top) return false;
+  top.close();
+  return true;
 }
 
 /** Bottom sheet on phones, centred dialog on desktop. */
@@ -455,9 +479,24 @@ export function Sheet({
   footer?: ReactNode;
 }) {
   const id = `sheet-${title.replace(/\W+/g, '-').toLowerCase()}`;
+  const ref = useRef<HTMLDivElement>(null);
+  const latest = useRef(onClose);
+  latest.current = onClose;
+  useEffect(() => {
+    const entry = { close: () => latest.current() };
+    openSheets.push(entry);
+    // Focus moves into the sheet (Escape and screen readers start there) unless a field took it.
+    if (ref.current && !ref.current.contains(document.activeElement)) ref.current.focus();
+    return () => {
+      const i = openSheets.indexOf(entry);
+      if (i >= 0) openSheets.splice(i, 1);
+    };
+  }, []);
   return (
     <div className="scrim" onClick={onClose} onKeyDown={(e) => e.key === 'Escape' && onClose()}>
       <div
+        ref={ref}
+        tabIndex={-1}
         className="sheet"
         role="dialog"
         aria-modal="true"

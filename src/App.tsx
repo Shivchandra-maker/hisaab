@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './design/Icon';
+import { closeTopSheet } from './design/components';
 import { monthOf } from './domain/dates';
 import type { Account, Category } from './domain/types';
 import { AccountDetail } from './screens/AccountDetail';
@@ -23,6 +24,8 @@ import { QuickSetup } from './screens/QuickSetup';
 import { Breakdown } from './screens/Breakdown';
 import { parseBreakdownRoute } from './domain/breakdown';
 import { addAllReady } from './db/inbox';
+import { db } from './db/repo';
+import { setDemo } from './db/demo';
 import { useStore } from './store';
 import { UICtx, type TxnDraft, type UI } from './ui';
 
@@ -62,14 +65,28 @@ type Editor =
   | null;
 
 export function App() {
-  const { today, isSample, onboarded, meta, inboxNew, needs } = useStore();
+  const { today, isSample, isDemo, onboarded, meta, inboxNew, needs } = useStore();
   const [route, setRoute] = useState(readRoute);
   const [month, setMonth] = useState(monthOf(today));
   const [editor, setEditor] = useState<Editor>(null);
   const [toast, setToast] = useState<{ message: string; undo?: () => void } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>();
 
-  useEffect(() => applyTheme((meta.theme as Theme) ?? 'system'), [meta.theme]);
+  // Hide amounts (U-26): blurred by CSS, so every screen follows without its own code.
+  useEffect(() => {
+    if (meta.hideAmounts === true) document.documentElement.setAttribute('data-private', '');
+    else document.documentElement.removeAttribute('data-private');
+  }, [meta.hideAmounts]);
+  useEffect(() => {
+    const theme = (meta.theme as Theme) ?? 'system';
+    applyTheme(theme);
+    if (theme !== 'system') return;
+    // Phone switches to dark at night with the app open: the bars follow too.
+    const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
+    const on = () => applyTheme('system');
+    mq?.addEventListener?.('change', on);
+    return () => mq?.removeEventListener?.('change', on);
+  }, [meta.theme]);
   useEffect(() => {
     const on = () => setRoute(readRoute());
     window.addEventListener('hashchange', on);
@@ -122,12 +139,20 @@ export function App() {
     if (!onboarded) return;
     return startCapture(
       (s) => ui.toast(`${s.toReview} new payment message${s.toReview === 1 ? '' : 's'} in Inbox`),
-      (r) => go(r),
+      (target) => {
+        if ('txnId' in target) {
+          // Land on Activity with that payment open, so Back shows the rest.
+          go('transactions');
+          void db.transactions.get(target.txnId).then((t) => t && ui.openTxn(t));
+        } else go(target.route);
+      },
     );
   }, [onboarded, ui, go]);
   useEffect(
     () =>
       handleBackButton(() => {
+        // Any open sheet (a day, a loan, the editor) closes before leaving the screen.
+        if (closeTopSheet()) return true;
         if (!editorOpen.current) return false;
         setEditor(null);
         return true;
@@ -262,14 +287,17 @@ export function App() {
               </div>
             </div>
           )}
-          {isSample && (
+          {(isSample || isDemo) && (
             <div className="page" style={{ marginBottom: 'var(--sp-4)' }}>
               <div className="banner sample-banner">
                 <span>
                   <b>Sample data</b> — not your money
                 </span>
-                <button className="banner-link" onClick={() => go('settings')}>
-                  Use my own
+                <button
+                  className="banner-link"
+                  onClick={() => (isDemo ? setDemo(false) : go('settings'))}
+                >
+                  {isDemo ? 'Back to my data' : 'Use my own'}
                 </button>
               </div>
             </div>
