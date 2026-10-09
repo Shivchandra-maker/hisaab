@@ -38,4 +38,11 @@ public class CaptureFilterTest {
         assertFalse(CaptureFilter.looksLikeBusinessSender("+919845012345"));
         assertTrue(CaptureFilter.looksLikeBusinessSender("VM-HDFCBK-S"));
     }
+
+    @Test
+    public void mathsLetterTextIsKept() {
+        // SBI Card: "spent on your SBI Credit Card" in sans-serif maths letters.
+        assertTrue(CaptureFilter.looksLikeMoney(
+                "Rs.120.00 \uD835\uDDCC\uD835\uDDC9\uD835\uDDBE\uD835\uDDC7\uD835\uDDCD on your card ending 4411 at CAFE on 03/10/26"));
+    }
 }

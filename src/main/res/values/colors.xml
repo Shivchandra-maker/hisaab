@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Behind the status bar and the navigation bar: the app's own background (the bg colour in tokens.css). -->
+    <color name="systemBar">#F6F8F7</color>
+    <!-- Navigation bar before Android 8.1, where its buttons can only be white. -->
+    <color name="systemBarDark">#0E1412</color>
+</resources>

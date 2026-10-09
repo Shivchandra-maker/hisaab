@@ -1,5 +1,6 @@
 package app.hisaab;
 
+import java.text.Normalizer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -13,6 +14,17 @@ import java.util.regex.Pattern;
  */
 public final class CaptureFilter {
     private CaptureFilter() {}
+
+    /**
+     * 2 = wide filter (H-01). 3 = maths-letter text ("𝗌𝗉𝖾𝗇𝗍", SBI Card) read as plain letters.
+     * The app re-reads past SMS once when this goes up.
+     */
+    public static final int VERSION = 3;
+
+    /** SBI Card writes words in maths letters; NFKC turns them back into plain ASCII. */
+    static String plain(String body) {
+        return body == null ? null : Normalizer.normalize(body, Normalizer.Form.NFKC);
+    }
 
     /** "Rs.250", "Rs 1,24,500", "INR 99", "₹41", "Rs..50", "USD 12.00" (card spends abroad). */
     private static final Pattern MONEY = Pattern.compile(
@@ -47,15 +59,16 @@ public final class CaptureFilter {
         return sender.matches(".*[A-Za-z].*");
     }
 
-    public static boolean looksLikeMoney(String body) {
-        if (body == null) return false;
+    public static boolean looksLikeMoney(String raw) {
+        if (raw == null) return false;
+        String body = plain(raw);
         return (MONEY.matcher(body).find() && MONEY_WORDS.matcher(body).find())
                 || BARE_AMOUNT.matcher(body).find();
     }
 
     /** Worth a "New payment" notification: money moved (not an OTP, reminder, offer or request). */
     public static boolean looksLikePayment(String body) {
-        return looksLikeMoney(body) && !NOT_A_PAYMENT.matcher(body).find();
+        return looksLikeMoney(body) && !NOT_A_PAYMENT.matcher(plain(body)).find();
     }
 
     /** "₹250" from the text, for the "new payment" notification. Empty if none. */

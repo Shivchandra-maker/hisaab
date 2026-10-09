@@ -15,8 +15,9 @@ public class MainActivity extends BridgeActivity {
         return r;
     }
 
+    /** A plain launch (app icon) clears any route left over from an earlier tap. */
     private static synchronized void rememberRoute(Intent intent) {
-        if (intent != null && intent.hasExtra("route")) launchRoute = intent.getStringExtra("route");
+        launchRoute = intent != null ? intent.getStringExtra("route") : null;
     }
 
     @Override
@@ -30,5 +31,6 @@ public class MainActivity extends BridgeActivity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         rememberRoute(intent);
+        if (intent != null && intent.hasExtra("route")) CapturePlugin.notifyRoute();
     }
 }

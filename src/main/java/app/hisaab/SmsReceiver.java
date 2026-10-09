@@ -45,7 +45,7 @@ public class SmsReceiver extends BroadcastReceiver {
             if (CaptureStore.add(context, "sms", sender, body, ts == null ? System.currentTimeMillis() : ts)) {
                 any = true;
                 // OTPs, reminders and offers are kept for the parser but don't ping you.
-                if (CaptureFilter.looksLikePayment(body)) CaptureNotifier.show(context, body);
+                if (CaptureFilter.looksLikePayment(body)) CaptureNotifier.show(context, sender, body);
             }
         }
         if (any) CapturePlugin.notifyCaptured();

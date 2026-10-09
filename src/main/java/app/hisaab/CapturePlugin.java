@@ -1,6 +1,7 @@
 package app.hisaab;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
@@ -10,7 +11,12 @@ import android.os.Build;
 import android.provider.Settings;
 import android.provider.Telephony;
 
+import android.view.Window;
+
+import androidx.activity.result.ActivityResult;
 import androidx.core.app.NotificationManagerCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -18,6 +24,7 @@ import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
@@ -25,6 +32,8 @@ import com.getcapacitor.annotation.PermissionCallback;
 import org.json.JSONArray;
 import org.json.JSONException;
 
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -39,8 +48,11 @@ import java.util.Set;
  *   readInbox({sinceMs})     → bank messages already on the phone, for a one-time import
  *   getPending() / ack({ids})→ the capture queue filled while the app was closed
  *   setOptions({apps, notify})
- *   takeRoute()              → "inbox" when the app was opened from a capture notification
+ *   takeRoute()              → "capture" when the app was opened from a capture notification
  *   requestContacts() / readContacts() → names + phone numbers, to tell friends from shops
+ *   openAppSettings()        → Hisaab's App info page (a permission was blocked with "Don't allow")
+ *   setBars({dark})          → status/navigation bar colours to match the app's theme
+ *   saveFile({name, text})   → "Save to…" picker (Downloads, Drive, a USB stick); for backups
  */
 @CapacitorPlugin(
         name = "HisaabCapture",
@@ -50,6 +62,13 @@ import java.util.Set;
             @Permission(strings = {Manifest.permission.READ_CONTACTS}, alias = "contacts")
         })
 public class CapturePlugin extends Plugin {
+    /**
+     * Version of this Android part. The web app shows it in Settings and uses it to notice an APK
+     * built without the latest Android files. 3 = contacts, wide filter, detailed notifications.
+     * 4 = notification tap opens the payment (route event), import reads the full range.
+     */
+    public static final int NATIVE_VERSION = 4;
+
     private static CapturePlugin instance;
 
     @Override
@@ -61,6 +80,15 @@ public class CapturePlugin extends Plugin {
     public static void notifyCaptured() {
         CapturePlugin p = instance;
         if (p != null) p.notifyListeners("captured", new JSObject(), true);
+    }
+
+    /**
+     * A notification was tapped while the app was already open. Android delivers that as a new
+     * intent without pausing the app, so no "resume" reaches the web app — tell it directly.
+     */
+    static void notifyRoute() {
+        CapturePlugin p = instance;
+        if (p != null) p.notifyListeners("route", new JSObject(), true);
     }
 
     private boolean smsGranted() {
@@ -88,6 +116,8 @@ public class CapturePlugin extends Plugin {
         JSArray apps = new JSArray();
         for (String a : CaptureStore.allowedApps(getContext())) apps.put(a);
         o.put("apps", apps);
+        o.put("nativeVersion", NATIVE_VERSION);
+        o.put("filterVersion", CaptureFilter.VERSION);
         return o;
     }
 
@@ -166,6 +196,66 @@ public class CapturePlugin extends Plugin {
         call.resolve(res);
     }
 
+    /**
+     * Save a backup where you choose. A WebView can't download a file on its own (H-20), so the
+     * system "Save to" picker writes it: Downloads, Google Drive, a memory card…
+     */
+    @PluginMethod
+    public void saveFile(PluginCall call) {
+        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType(call.getString("mime", "application/json"));
+        i.putExtra(Intent.EXTRA_TITLE, call.getString("name", "hisaab-backup.json"));
+        startActivityForResult(call, i, "afterSaveFile");
+    }
+
+    @ActivityCallback
+    private void afterSaveFile(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        JSObject res = new JSObject();
+        Intent data = result.getData();
+        if (result.getResultCode() != Activity.RESULT_OK || data == null || data.getData() == null) {
+            res.put("saved", false);
+            call.resolve(res);
+            return;
+        }
+        try (OutputStream out = getContext().getContentResolver().openOutputStream(data.getData())) {
+            if (out == null) throw new java.io.IOException("No file to write to");
+            out.write(call.getString("text", "").getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            call.reject("Could not save the file", e);
+            return;
+        }
+        res.put("saved", true);
+        call.resolve(res);
+    }
+
+    @PluginMethod
+    public void openAppSettings(PluginCall call) {
+        Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", getContext().getPackageName(), null));
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        getContext().startActivity(i);
+        call.resolve();
+    }
+
+    @PluginMethod
+    @SuppressWarnings("deprecation") // bar colours still apply: the app opts out of edge-to-edge
+    public void setBars(PluginCall call) {
+        boolean dark = Boolean.TRUE.equals(call.getBoolean("dark", false));
+        getActivity().runOnUiThread(() -> {
+            Window w = getActivity().getWindow();
+            int color = dark ? 0xFF0E1412 : 0xFFF6F8F7; // tokens.css --bg
+            w.setStatusBarColor(color);
+            // White navigation buttons only before 8.1: keep that bar dark there.
+            w.setNavigationBarColor(Build.VERSION.SDK_INT >= 27 ? color : 0xFF0E1412);
+            WindowInsetsControllerCompat c = WindowCompat.getInsetsController(w, w.getDecorView());
+            c.setAppearanceLightStatusBars(!dark);
+            c.setAppearanceLightNavigationBars(!dark);
+        });
+        call.resolve();
+    }
+
     @PermissionCallback
     private void afterPermission(PluginCall call) {
         call.resolve(statusObject());
@@ -185,7 +275,9 @@ public class CapturePlugin extends Plugin {
             call.reject("SMS permission is not granted");
             return;
         }
-        long since = (long) call.getDouble("sinceMs", (double) (System.currentTimeMillis() - 30L * 86_400_000L)).doubleValue();
+        // optLong, not getDouble: a millisecond timestamp arrives as a Long, which getDouble
+        // silently ignores — every import fell back to 30 days ("1 year" included).
+        long since = call.getData().optLong("sinceMs", System.currentTimeMillis() - 30L * 86_400_000L);
         int limit = call.getInt("limit", 3000);
         JSArray out = new JSArray();
         ContentResolver cr = getContext().getContentResolver();
