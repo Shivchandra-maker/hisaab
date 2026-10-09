@@ -156,9 +156,11 @@ export function CardDetail({ id }: { id: string }) {
           </div>
           <div>
             <div className="label">Total owed</div>
-            <div className="v num">{formatINR(s.owed)}</div>
+            <div className="v num">{formatINR(Math.max(0, s.owed))}</div>
             <div style={{ fontSize: 'var(--fs-sm)', opacity: 0.85 }}>
-              {formatINR(s.available)} available
+              {s.owed < 0
+                ? `${formatINR(-s.owed)} credit on the card`
+                : `${formatINR(s.available)} available`}
             </div>
           </div>
         </div>
@@ -173,6 +175,28 @@ export function CardDetail({ id }: { id: string }) {
           later · paid from {payFrom?.name}
         </div>
       </section>
+
+      <details className="explain">
+        <summary>What do these numbers mean?</summary>
+        <dl>
+          <dt>Due now</dt>
+          <dd>What’s still unpaid on your last bill (statement). Pay it by the due date.</dd>
+          <dt>Unbilled</dt>
+          <dd>
+            Spent on the card since the last bill. It goes on the next bill, on{' '}
+            {formatDate(s.currentPeriod.end)}.
+          </dd>
+          <dt>Total owed</dt>
+          <dd>
+            Everything you owe the card today — the unpaid bill plus unbilled spending
+            {s.dueNow > 0 || s.unbilled > 0
+              ? ` (${formatINR(s.dueNow)} + ${formatINR(Math.max(0, s.unbilled))} ≈ ${formatINR(Math.max(0, s.owed))})`
+              : ''}
+            . When your bank’s messages say the available limit, Hisaab uses it: owed = credit limit
+            − available limit.
+          </dd>
+        </dl>
+      </details>
 
       <BankCheck account={card} />
       {card.check &&

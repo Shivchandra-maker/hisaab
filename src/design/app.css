@@ -2315,3 +2315,81 @@ html[data-private] .chart .tick {
   align-self: flex-start;
   margin-top: -4px;
 }
+
+/* Card screen: what Due now / Unbilled / Total owed mean. */
+.explain {
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+}
+.explain summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 600;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+}
+.explain dl {
+  margin: var(--sp-2) 0 0;
+  display: grid;
+  gap: 4px var(--sp-3);
+}
+.explain dt {
+  font-weight: 600;
+  color: var(--fg);
+}
+.explain dd {
+  margin: 0 0 var(--sp-2);
+}
+
+/* Edit sheet: "Also move 12 other Swiggy payments to Food". */
+.also-row {
+  gap: 8px;
+  align-items: flex-start;
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+}
+.also-row input {
+  margin-top: 3px;
+}
+
+/* H-25: "Reading older bank messages · back to 10 Aug · 640 read". */
+.catchup-note {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: flex-start;
+  font-size: var(--fs-sm);
+}
+.catchup-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: catchup-pulse 1.4s ease-in-out infinite;
+}
+@keyframes catchup-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .catchup-dot {
+    animation: none;
+  }
+}
+
+/* Welcome: "New phone? Restore from a backup" under the other ways to start. */
+.onb-restore {
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: calc(var(--sp-2) * -1);
+}
+.onb-restore form {
+  width: 100%;
+  text-align: left;
+}

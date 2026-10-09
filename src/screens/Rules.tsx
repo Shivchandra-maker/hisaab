@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { BackLink, CategoryAvatar, EmptyState } from '../design/components';
 import { Icon } from '../design/Icon';
-import { deleteRule, saveRule } from '../db/repo';
+import { deleteRule, recategorise, samePayee, saveRule } from '../db/repo';
 import { useStore } from '../store';
 import { useUI } from '../ui';
 
 /** Merchant → category rules, learned from your choices. Edit or forget them here. */
 export function Rules() {
-  const { rules, categories, categoryById } = useStore();
+  const { rules, categories, categoryById, transactions } = useStore();
   const { go, toast } = useUI();
   const [q, setQ] = useState('');
   const list = rules.filter((r) => !q || r.name.toLowerCase().includes(q.toLowerCase()));
@@ -19,8 +19,9 @@ export function Rules() {
         <h1>Merchant rules</h1>
       </div>
       <p className="muted" style={{ margin: 0 }}>
-        When you add or correct a transaction, Hisaab remembers the category for that merchant and
-        uses it next time — for typed entries and for bank messages.
+        When you pick a category for a payment, Hisaab remembers it for that merchant — for new
+        payments, and (unless you untick it) for the earlier ones too. Changing a rule here moves
+        that merchant’s past payments as well.
       </p>
       {rules.length > 6 && (
         <input
@@ -65,8 +66,17 @@ export function Rules() {
                   className="input rule-cat"
                   value={r.categoryId ?? ''}
                   onChange={async (e) => {
-                    await saveRule({ ...r, categoryId: e.target.value || undefined });
-                    toast('Rule updated');
+                    const categoryId = e.target.value || undefined;
+                    await saveRule({ ...r, categoryId });
+                    // U-27: past payments there follow the rule too, not only new ones.
+                    const income = categoryById.get(categoryId ?? '')?.kind === 'income';
+                    const past = samePayee(transactions, r.name, categoryId, income);
+                    if (!categoryId || !past.length) return toast('Rule updated');
+                    const undo = await recategorise(past, categoryId);
+                    toast(
+                      `Rule updated · ${past.length} past payment${past.length === 1 ? '' : 's'} moved too`,
+                      undo,
+                    );
                   }}
                 >
                   {categories

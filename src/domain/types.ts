@@ -53,6 +53,11 @@ export interface CardDetails {
    * Key = month the statement closes in ('YYYY-MM'), value = actual statement date.
    */
   statementOverrides?: Record<MonthKey, ISODate>;
+  /**
+   * You confirmed the card can hold a credit (you paid extra), so an "available limit" above the
+   * credit limit means the card owes you. Without it, that reading means the limit is wrong.
+   */
+  creditBalanceOk?: boolean;
 }
 
 export interface Account extends Syncable {

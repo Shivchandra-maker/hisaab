@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { ErrorBoundary } from './design/ErrorBoundary';
 import { StoreProvider } from './store';
+import './design/fonts.css';
 import './design/app.css';
 
 const Loading = () => (

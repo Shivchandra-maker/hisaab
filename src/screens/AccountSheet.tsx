@@ -56,6 +56,8 @@ export function AccountSheet({
     initial?.card?.paymentAccountId ?? activeAccounts.find((a) => a.kind === 'bank')?.id ?? '',
   );
   const [error, setError] = useState('');
+  const [adjusting, setAdjusting] = useState(false);
+  const { transactions } = useStore();
 
   const isCard = kind === 'credit_card';
   const banks = activeAccounts.filter((a) => a.kind === 'bank' && a.id !== initial?.id);
@@ -97,8 +99,19 @@ export function AccountSheet({
       }
       // Bank accounts can be overdrawn and a wallet can look negative until a top-up is found,
       // so only cards refuse a negative amount (that would be a credit balance).
-      if (isCard && toPaise(opening || '0') < 0)
+      // Only a new account takes a starting amount; an existing one keeps its anchor (often the
+      // balance from your bank's latest message) and is corrected with Update balance.
+      if (!editing && isCard && toPaise(opening || '0') < 0)
         throw new ValidationError('Amount owed can’t be negative.');
+      if (editing) {
+        draft.openingBalance = initial!.openingBalance!;
+        draft.openingDate = initial!.openingDate!;
+      }
+      const avail = initial?.lastAvailable?.amount;
+      if (isCard && avail && limit && toPaise(limit) < avail && !initial?.card?.creditBalanceOk)
+        throw new ValidationError(
+          `Your bank says ${formatINR(avail)} is available, so the credit limit is at least that.`,
+        );
       if (last4 && !/^\d{4}$/.test(last4.trim()))
         throw new ValidationError('Last 4 digits should be 4 numbers.');
       const saved = await saveAccount(draft as Account);
@@ -108,6 +121,9 @@ export function AccountSheet({
       setError(e instanceof Error ? e.message : 'Could not save.');
     }
   };
+
+  if (adjusting && initial?.id)
+    return <AdjustSheet account={initial as Account} onClose={onClose} />;
 
   return (
     <Sheet title={editing ? 'Edit account' : 'Add account'} onClose={onClose}>
@@ -235,35 +251,48 @@ export function AccountSheet({
         </>
       )}
 
-      <div className="grid-2">
-        <Field
-          label={isCard ? 'Amount owed on start date' : 'Balance on start date'}
-          htmlFor="acc-open"
-          hint={
-            editing
-              ? 'To fix today’s balance, use Update balance instead.'
-              : isCard
-                ? 'Everything you owe on the card, billed or not.'
-                : undefined
-          }
-        >
-          <MoneyInput id="acc-open" value={opening} onChange={setOpening} />
-        </Field>
-        <Field
-          label="Start date"
-          htmlFor="acc-date"
-          hint="Transactions before this date are ignored"
-        >
-          <input
-            id="acc-date"
-            type="date"
-            className="input"
-            max={today}
-            value={openingDate}
-            onChange={(e) => e.target.value && setOpeningDate(e.target.value)}
-          />
-        </Field>
-      </div>
+      {editing && initial?.id ? (
+        <div className="note row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+          <span style={{ flex: '1 1 200px' }}>
+            {isCard ? 'Owed today' : 'Balance today'}:{' '}
+            <b className="num">{formatINR(balanceOf(initial as Account, transactions, today))}</b>
+            {initial.check
+              ? ` · from your bank’s message on ${formatDate(initial.check.date)}`
+              : ''}
+          </span>
+          <button className="btn btn-sm" onClick={() => setAdjusting(true)}>
+            Wrong? Update it
+          </button>
+        </div>
+      ) : (
+        <div className="grid-2">
+          <Field
+            label={isCard ? 'Amount you owe now' : 'Balance now'}
+            htmlFor="acc-open"
+            hint={
+              isCard
+                ? 'Everything on the card, billed or not. 0 for a new card.'
+                : 'As in your bank app.'
+            }
+          >
+            <MoneyInput id="acc-open" value={opening} onChange={setOpening} />
+          </Field>
+          <Field
+            label="As of"
+            htmlFor="acc-date"
+            hint="Payments before this day aren’t counted again"
+          >
+            <input
+              id="acc-date"
+              type="date"
+              className="input"
+              max={today}
+              value={openingDate}
+              onChange={(e) => e.target.value && setOpeningDate(e.target.value)}
+            />
+          </Field>
+        </div>
+      )}
 
       <ErrorNote message={error} />
       <div className="row">
@@ -292,19 +321,24 @@ export function AdjustSheet({ account, onClose }: { account: Account; onClose: (
   const { transactions, today } = useStore();
   const { toast } = useUI();
   const current = balanceOf(account, transactions, today);
-  const [value, setValue] = useState(String(toRupees(current)));
+  const [value, setValue] = useState(String(toRupees(Math.abs(current))));
   const [error, setError] = useState('');
   const isCard = account.kind === 'credit_card';
+  // A card can owe you (you paid extra): the bank app shows it as a credit or "−₹".
+  const [credit, setCredit] = useState(isCard && current < 0);
+  const actual = () => (credit ? -1 : 1) * Math.abs(toPaise(value || '0'));
   let diff = 0;
   try {
-    diff = toPaise(value || '0') - current;
+    diff = actual() - current;
   } catch {
     /* shown on save */
   }
 
   const save = async () => {
     try {
-      const r = await adjustBalance(account.id, toPaise(value || '0'), today);
+      if (credit && !account.card?.creditBalanceOk)
+        await saveAccount({ ...account, card: { ...account.card!, creditBalanceOk: true } });
+      const r = await adjustBalance(account.id, actual(), today);
       toast(r ? 'Balance updated' : 'Balance already matches');
       onClose();
     } catch (e) {
@@ -314,12 +348,19 @@ export function AdjustSheet({ account, onClose }: { account: Account; onClose: (
   return (
     <Sheet title="Update balance" onClose={onClose}>
       <p className="muted" style={{ margin: 0 }}>
-        Hisaab shows {formatINR(current)} {isCard ? 'owed on' : 'in'} {account.name} today (
+        Hisaab shows {formatINR(Math.abs(current))}{' '}
+        {isCard ? (current < 0 ? 'credit on' : 'owed on') : 'in'} {account.name} today (
         {formatDate(today)}). Enter the real figure from your {isCard ? 'card app' : 'bank app'}.
       </p>
       <Field label={isCard ? 'Actual amount owed' : 'Actual balance'} htmlFor="adj-value">
         <MoneyInput id="adj-value" value={value} onChange={setValue} autoFocus />
       </Field>
+      {isCard && (
+        <label className="row" style={{ gap: 8, fontSize: 'var(--fs-sm)' }}>
+          <input type="checkbox" checked={credit} onChange={(e) => setCredit(e.target.checked)} />
+          The card owes me this (I paid more than the bill)
+        </label>
+      )}
       {diff !== 0 && (
         <div className="note note-ok">
           Records a {formatINR(Math.abs(diff))} balance adjustment. It changes the balance only —

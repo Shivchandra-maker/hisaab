@@ -12,7 +12,13 @@ import { db, resetAll, setMeta } from './repo';
 import type { CapturedMessage } from './inbox';
 import { reparseInboxIfNeeded } from './inbox';
 import { PARSER_VERSION } from '../domain/sms/parse';
-import { finishSetup, pastedToCaptured, scanMessages } from './setup';
+import {
+  finishSetup,
+  pastedToCaptured,
+  resumeSetup,
+  scanMessages,
+  setupInterrupted,
+} from './setup';
 
 const PASTE = `Sent Rs.250.00
 From HDFC Bank A/C *4521
@@ -383,5 +389,45 @@ describe('U-21: paid for a group', () => {
         { person: ' asha ', amount: 1000 },
       ]),
     ).rejects.toThrow();
+  });
+});
+
+describe('H-24: setup stopped half-way', () => {
+  it('setting up again never makes a second copy of an account', async () => {
+    const messages = pastedToCaptured(PASTE, '2026-10-01');
+    const found = scanMessages(messages);
+    const choices = found.map((f) => ({ found: f, keep: true, name: f.name }));
+    await finishSetup(choices, messages, { cash: true });
+    const first = (await db.accounts.toArray()).length;
+    const txns = (await db.transactions.toArray()).length;
+    await finishSetup(choices, messages, { cash: true });
+    expect((await db.accounts.toArray()).length).toBe(first);
+    expect((await db.transactions.toArray()).length).toBe(txns);
+  });
+
+  it('the next open finishes it: payments added, accounts kept, setup marked done', async () => {
+    const messages = pastedToCaptured(PASTE, '2026-10-01');
+    const found = scanMessages(messages);
+    const choices = found.map((f) => ({ found: f, keep: true, name: f.name }));
+    await finishSetup(choices, messages, { cash: true });
+    const accounts = (await db.accounts.toArray()).length;
+    // What a stop during "Adding your payments" left behind: accounts, no payments, not done.
+    await db.transactions.clear();
+    await db.inbox.clear();
+    await setMeta('onboarded', false);
+    await setMeta('setupStage', 'adding');
+    const metaRows = await db.meta.toArray();
+    const meta = Object.fromEntries(metaRows.map((m) => [m.key, m.value]));
+    expect(setupInterrupted(meta, accounts)).toBe(true);
+    const r = await resumeSetup(messages);
+    expect(r.added).toBeGreaterThan(0);
+    expect((await db.accounts.toArray()).length).toBe(accounts);
+    expect((await db.meta.get('onboarded'))?.value).toBe(true);
+  });
+
+  it('older installs stopped half-way (no stage saved) are found too', () => {
+    expect(setupInterrupted({ autoAdd: true }, 4)).toBe(true);
+    expect(setupInterrupted({}, 4)).toBe(false); // set up by hand, not finished: Welcome
+    expect(setupInterrupted({ onboarded: true, autoAdd: true }, 4)).toBe(false);
   });
 });

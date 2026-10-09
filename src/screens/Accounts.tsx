@@ -69,7 +69,7 @@ export function Accounts() {
                         </span>
                       )}
                       <span className="spacer" />
-                      <span className="num">{formatINR(s.owed)}</span>
+                      <span className="num">{formatINR(Math.max(0, s.owed))}</span>
                     </div>
                     <Progress value={s.utilisation} color="var(--cycle)" thin />
                     <div className="row item-sub" style={{ flexWrap: 'wrap', gap: 8 }}>

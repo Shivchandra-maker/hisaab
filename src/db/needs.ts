@@ -1,6 +1,7 @@
 import { accountHintKey, suggest, type Suggestion } from '../domain/sms/match';
 import { formatINR } from '../domain/money';
-import type { Account, InboxItem, MerchantRule, Transaction } from '../domain/types';
+import type { Account, InboxItem, ISODate, MerchantRule, Transaction } from '../domain/types';
+import { addMonths, monthOf } from '../domain/dates';
 import type { ParsedSms } from '../domain/sms/parse';
 
 /** Duplicates we're not sure about; certain ones (same bank reference…) are handled silently. */
@@ -24,6 +25,13 @@ export interface InboxNeeds {
   other: InboxItem[];
   /** Fully understood messages not added yet (added on their own when auto-add is on). */
   ready: InboxItem[];
+  /**
+   * Unclear messages from before last month: kept, never counted, folded away in the Inbox
+   * (U-28 — nobody wants to sort out January in October).
+   */
+  older: InboxItem[];
+  /** First day that still counts ('YYYY-MM-01' of last month), when `today` was given. */
+  since?: ISODate;
   suggestions: Map<string, Suggestion>;
   /** The one number shown everywhere: badge, Home banner, Inbox heading (D-01). */
   count: number;
@@ -40,13 +48,18 @@ export function inboxNeeds(ctx: {
   rules: MerchantRule[];
   accountHints: Record<string, string>;
   autoAdd: boolean;
+  /** Today; with it, only this month and last month need you. */
+  today?: ISODate;
 }): InboxNeeds {
-  const fresh = ctx.inbox.filter((i) => i.status === 'new');
-  const dups = ctx.inbox.filter(needsDupCheck);
+  const since = ctx.today ? `${addMonths(monthOf(ctx.today), -1)}-01` : undefined;
+  const recent = (i: InboxItem) => !since || (i.parsed.date ?? i.receivedAt) >= since;
+  const waiting = ctx.inbox.filter((i) => i.status === 'new');
+  const fresh = waiting.filter(recent);
+  const dups = ctx.inbox.filter((i) => needsDupCheck(i) && recent(i));
 
   const byPerson = new Map<string, Transaction[]>();
   for (const t of ctx.transactions) {
-    if (!t.askLoan || t.deletedAt) continue;
+    if (!t.askLoan || t.deletedAt || (since && t.date < since)) continue;
     const k = personKey(t.merchant ?? '?');
     byPerson.set(k, [...(byPerson.get(k) ?? []), t]);
   }
@@ -58,7 +71,7 @@ export function inboxNeeds(ctx: {
     accountHints: ctx.accountHints,
   };
   const suggestions = new Map(
-    fresh.map((i) => [i.id, suggest(i.parsed, { ...base, receivedAt: i.receivedAt })]),
+    waiting.map((i) => [i.id, suggest(i.parsed, { ...base, receivedAt: i.receivedAt })]),
   );
 
   const byAccount = new Map<string, InboxItem[]>();
@@ -70,8 +83,13 @@ export function inboxNeeds(ctx: {
   }
   const groups = [...byAccount.entries()];
   const grouped = new Set(groups.flatMap(([, items]) => items.map((i) => i.id)));
-  const ready = fresh.filter((i) => suggestions.get(i.id)?.ready);
+  // Ready ones of any age are still added on their own; only the questions are cut to 2 months.
+  const ready = waiting.filter((i) => suggestions.get(i.id)?.ready);
   const other = fresh.filter((i) => !grouped.has(i.id) && !suggestions.get(i.id)?.ready);
+  const older = [
+    ...waiting.filter((i) => !recent(i) && !suggestions.get(i.id)?.ready),
+    ...ctx.inbox.filter((i) => needsDupCheck(i) && !recent(i)),
+  ].sort((a, b) => (b.parsed.date ?? b.receivedAt).localeCompare(a.parsed.date ?? a.receivedAt));
   const people = [...byPerson.values()];
 
   return {
@@ -81,8 +99,14 @@ export function inboxNeeds(ctx: {
     other,
     ready,
     suggestions,
+    older,
+    since,
     count:
-      people.length + groups.length + dups.length + other.length + (ctx.autoAdd ? 0 : ready.length),
+      people.length +
+      groups.length +
+      dups.length +
+      other.length +
+      (ctx.autoAdd ? 0 : ready.filter(recent).length),
   };
 }
 

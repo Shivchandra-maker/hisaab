@@ -7,6 +7,7 @@ import { formatINR } from '../domain/money';
 import type { AccountKind } from '../domain/types';
 import { setMeta } from '../db/repo';
 import { setDemo } from '../db/demo';
+import { RestoreFromFile } from './BackupRestore';
 import { useStore } from '../store';
 import { useUI } from '../ui';
 import { SetupFromSms } from './SetupFromSms';
@@ -103,6 +104,10 @@ export function Welcome() {
         >
           Try sample data
         </button>
+      </div>
+      {/* H-20: a new phone starts from your backup instead of from scratch. */}
+      <div className="onb-links onb-restore">
+        <RestoreFromFile label="New phone? Restore from a backup" onDone={() => undefined} />
       </div>
     </div>
   );

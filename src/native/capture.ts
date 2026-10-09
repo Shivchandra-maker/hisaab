@@ -53,6 +53,7 @@ interface HisaabCapturePlugin {
   readContacts(): Promise<{ contacts: Contact[] }>;
   openAppSettings(): Promise<void>;
   setBars(opts: { dark: boolean }): Promise<void>;
+  saveFile(opts: { name: string; text: string; mime?: string }): Promise<{ saved: boolean }>;
   addListener(event: 'captured' | 'route', fn: () => void): Promise<PluginListenerHandle>;
 }
 
@@ -128,6 +129,24 @@ export async function requestContacts(): Promise<ContactsResult> {
   }
 }
 
+/**
+ * Android: the system "Save to…" picker (a WebView can't download files). 'unsupported' on an
+ * older Android part or in a browser — the caller falls back to a download / copyable text.
+ */
+export async function saveFileOnPhone(
+  name: string,
+  text: string,
+): Promise<'saved' | 'cancelled' | 'unsupported'> {
+  if (!isAndroidApp) return 'unsupported';
+  try {
+    const r = await Capture.saveFile({ name, text, mime: 'application/json' });
+    return r.saved ? 'saved' : 'cancelled';
+  } catch (e) {
+    if ((e as { code?: string })?.code === 'UNIMPLEMENTED') return 'unsupported';
+    throw e;
+  }
+}
+
 export const openAppSettings = () => Capture.openAppSettings().catch(() => undefined);
 
 /** Status and navigation bars follow the app's own light/dark theme. */
@@ -154,13 +173,35 @@ export async function catchUp(days = 3): Promise<number> {
   return added || s.toReview;
 }
 
+/** Progress of the one-time catch-up, kept in meta so it survives the app closing (H-25). */
+export interface CatchUp {
+  /** Filter version being caught up to. */
+  target: number;
+  /** Fixed "now" when it started, so a resumed run reads the same windows. */
+  anchor: number;
+  /** Index into CATCH_UP_DAYS of the window being read. */
+  stage: number;
+  /** Messages of that window already filed. */
+  offset: number;
+  /** Messages filed so far, all windows. */
+  done: number;
+  /** Oldest day the current window reaches (for "back to 10 Aug"). */
+  from: string;
+}
+
+/** Newest first: the last two weeks are back within seconds, the rest of the year follows. */
+const CATCH_UP_DAYS = [14, 60, 180, 365];
+let catchingUp = false;
+
 /**
  * Older versions of the Android filter dropped many real alerts ("Sent Rs…", "Your txn of ₹…",
- * reversals, SIPs). Once after updating, read the same months as setup again; messages already
- * filed are skipped by their text, so only the missed ones are added.
+ * reversals, SIPs), and Android parts before 4 never read more than 30 days back. Once after
+ * updating, read the past year again — newest window first, saving progress after every chunk,
+ * so closing the app loses nothing and recent days never wait behind old ones (H-25). Messages
+ * already filed are skipped by their text, so only the missed ones are added.
  */
 export async function rescanAfterFilterUpgrade(): Promise<number> {
-  if (!isAndroidApp || isDemo) return 0;
+  if (!isAndroidApp || isDemo || catchingUp) return 0;
   // Keyed on the filter the phone actually runs: an APK built without the new android/ files
   // still has the old filter, and re-reading through it would miss the same messages again.
   const st = await Capture.status();
@@ -169,24 +210,51 @@ export async function rescanAfterFilterUpgrade(): Promise<number> {
   // Android parts before 4 read only 30 days whatever was asked; wait for one that reads it all.
   if ((st.nativeVersion ?? 0) < 4) return 0;
   if ((await getMeta<number>('nativeFilterRead2', 1)) >= native) return 0;
-  await reparseInboxIfNeeded(); // apply the new parser to what's already filed first
-  if (!(await getMeta<boolean>('quickSetupDone', false))) {
+  catchingUp = true;
+  try {
+    await reparseInboxIfNeeded(); // apply the new parser to what's already filed first
+    // H-26: nothing to catch up only if messages were never read at all (set up by hand).
+    const everRead =
+      (await getMeta<boolean>('quickSetupDone', false)) || (await db.inbox.count()) > 0;
+    if (!everRead) {
+      await setMeta('nativeFilterRead2', native);
+      return 0;
+    }
+    if (!st.sms) return 0; // try again once SMS is allowed
+    const saved = await getMeta<CatchUp | null>('catchUp', null);
+    const anchor = saved?.target === native ? saved.anchor : Date.now();
+    let cu: CatchUp =
+      saved?.target === native
+        ? saved
+        : { target: native, anchor, stage: 0, offset: 0, done: 0, from: '' };
+    const autoAdd = await getMeta<boolean>('autoAdd', true);
+    let fresh = 0;
+    for (let stage = cu.stage; stage < CATCH_UP_DAYS.length; stage++) {
+      const since = anchor - CATCH_UP_DAYS[stage]! * DAY;
+      const upTo = stage === 0 ? Infinity : anchor - CATCH_UP_DAYS[stage - 1]! * DAY;
+      cu = { ...cu, stage, from: new Date(since).toISOString().slice(0, 10) };
+      const { messages } = await Capture.readInbox({ sinceMs: since, limit: 20_000 });
+      // Only this window's own days, oldest first inside it (a card bill paid, then received).
+      const window = messages.filter((m) => m.ts < upTo).sort((x, y) => x.ts - y.ts);
+      for (let i = stage === cu.stage ? cu.offset : 0; i < window.length; i += CHUNK) {
+        const s = await ingestCaptured(window.slice(i, i + CHUNK));
+        fresh += s.read - s.alreadySeen;
+        const filed = Math.min(i + CHUNK, window.length) - i;
+        cu = { ...cu, offset: i + CHUNK, done: cu.done + filed };
+        await setMeta('catchUp', cu);
+      }
+      // Each window shows up in your totals as soon as it's read.
+      if (autoAdd) await addAllReady();
+      await refreshCheckpoints();
+      cu = { ...cu, stage: stage + 1, offset: 0 };
+      await setMeta('catchUp', cu);
+    }
     await setMeta('nativeFilterRead2', native);
-    return 0;
+    await setMeta('catchUp', null);
+    return fresh;
+  } finally {
+    catchingUp = false;
   }
-  if (!st.sms) return 0; // try again once SMS is allowed
-  // A year: earlier imports stopped at 30 days even when "1 year" was chosen.
-  const { messages } = await Capture.readInbox({ sinceMs: Date.now() - 365 * DAY, limit: 20_000 });
-  const sorted = [...messages].sort((a, b) => a.ts - b.ts);
-  let fresh = 0;
-  for (let i = 0; i < sorted.length; i += CHUNK) {
-    const s = await ingestCaptured(sorted.slice(i, i + CHUNK));
-    fresh += s.read - s.alreadySeen;
-  }
-  if (await getMeta<boolean>('autoAdd', true)) await addAllReady();
-  await refreshCheckpoints();
-  await setMeta('nativeFilterRead2', native);
-  return fresh;
 }
 
 /** How far back the one-time import reads. */
@@ -231,6 +299,9 @@ export async function importPastMessages(
   }
   if (await getMeta<boolean>('autoAdd', true)) await addAllReady();
   await refreshCheckpoints();
+  // You chose how far back to read: the automatic catch-up after updating won't read it again.
+  const st = await Capture.status().catch(() => null);
+  if (st && (st.nativeVersion ?? 0) >= 4) await setMeta('nativeFilterRead2', st.filterVersion ?? 1);
   return total;
 }
 
@@ -292,7 +363,13 @@ export function startCapture(
   void run().then(() => rescanAfterFilterUpgrade().catch(() => 0));
   handles.push(Capture.addListener('captured', () => void run()));
   handles.push(Capture.addListener('route', () => void run()));
-  handles.push(App.addListener('resume', () => void run()));
+  // A catch-up stopped by closing the app carries on when it's opened again.
+  handles.push(
+    App.addListener(
+      'resume',
+      () => void run().then(() => rescanAfterFilterUpgrade().catch(() => 0)),
+    ),
+  );
   return () => handles.forEach((h) => void h.then((x) => x.remove()));
 }
 

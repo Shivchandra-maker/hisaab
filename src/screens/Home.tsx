@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { catchUp } from '../native/capture';
+import { catchUp as catchUpDays, type CatchUp } from '../native/capture';
 import { usePullToRefresh } from '../design/usePullToRefresh';
 import {
   Amount,
@@ -54,7 +54,7 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
   const toSort = useMemo(() => shopsToSort(txns, rules).shops.length, [txns, rules]);
   const { go, openTxn, toast } = useUI();
   const pull = usePullToRefresh(async () => {
-    const n = await catchUp(3);
+    const n = await catchUpDays(3);
     toast(n ? `${n} new payment${n === 1 ? '' : 's'}` : 'Up to date');
   });
   const cards = accounts.filter((a) => a.card && !a.archived);
@@ -106,6 +106,8 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
 
   // D-02: say what it is ("New account found · ICICI Credit Card ••5566"), not just a count.
   const headline = needsHeadline(needs);
+  // H-25: the one-time catch-up after an update says what it's doing (and survives restarts).
+  const catchUp = meta.catchUp as CatchUp | null | undefined;
   return (
     <div className="page">
       {pull.indicator}
@@ -122,6 +124,15 @@ export function Home({ month, setMonth }: { month: string; setMonth: (m: string)
         </button>
       </div>
 
+      {catchUp && (
+        <div className="note catchup-note" role="status">
+          <span className="catchup-dot" aria-hidden="true" />
+          <span>
+            <b>Reading older bank messages</b> · back to {formatDate(catchUp.from || today)} ·{' '}
+            {catchUp.done} read. Recent days are already in; older months fill in as it goes.
+          </span>
+        </div>
+      )}
       {inboxNew > 0 && (
         <button className="inbox-banner" onClick={() => go('inbox')}>
           <Icon name="inbox" size={18} />

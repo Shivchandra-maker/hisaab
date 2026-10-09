@@ -84,4 +84,55 @@ describe('balance checkpoints', () => {
     expect(balanceOf(card, await db.transactions.toArray(), '2026-09-30')).toBe(5_000_00);
     expect(card.lastAvailable).toEqual({ amount: 95_000_00, date: '2026-09-28' });
   });
+
+  it('a limit lower than the available limit never makes the card "owe" a negative amount', async () => {
+    // The user typed ₹1,00,000 as the limit; the bank says ₹1,43,000 is available.
+    await ingestCaptured([
+      {
+        id: '5',
+        source: 'sms',
+        ts: at('2026-09-20T10:00:00+05:30'),
+        body: 'Spent Rs.2,000 On HDFC Bank Card 8834 At AMAZON On 2026-09-20:10:15:01.',
+      },
+      {
+        id: '6',
+        source: 'sms',
+        ts: at('2026-09-28T10:00:00+05:30'),
+        body: 'Spent Rs.1,499 On HDFC Bank Card 8834 At CULT FIT On 2026-09-28:10:15:01. Avl Lmt Rs.1,43,000.00',
+      },
+    ]);
+    await addAllReady();
+    await refreshCheckpoints();
+    let card = (await db.accounts.toArray()).find((a) => a.last4 === '8834')!;
+    const txns = await db.transactions.toArray();
+    // Not −₹43,000 (−43%): the reading is set aside and the payments still count.
+    expect(balanceOf(card, txns, '2026-09-30')).toBe(3_499_00);
+    expect(card.lastAvailable?.amount).toBe(1_43_000_00);
+    // The real limit is ₹2,00,000: the same message now says ₹57,000 owed.
+    await db.accounts.update(card.id, { card: { ...card.card!, creditLimit: 2_00_000_00 } });
+    await refreshCheckpoints();
+    card = (await db.accounts.get(card.id))!;
+    expect(balanceOf(card, txns, '2026-09-30')).toBe(57_000_00);
+    // A statement before the anchor works back from it (₹57,000 − 1,499 − 2,000 on 19 Sep).
+    expect(balanceOf(card, txns, '2026-09-19')).toBe(53_501_00);
+  });
+
+  it('correcting the limit after a bad reading re-anchors on the same message', async () => {
+    await ingestCaptured([
+      {
+        id: '7',
+        source: 'sms',
+        ts: at('2026-09-28T10:00:00+05:30'),
+        body: 'Spent Rs.1,499 On HDFC Bank Card 8834 At CULT FIT On 2026-09-28:10:15:01. Avl Lmt Rs.95,000.00',
+      },
+    ]);
+    await addAllReady();
+    await refreshCheckpoints();
+    let card = (await db.accounts.toArray()).find((a) => a.last4 === '8834')!;
+    expect(balanceOf(card, await db.transactions.toArray())).toBe(5_000_00);
+    await db.accounts.update(card.id, { card: { ...card.card!, creditLimit: 1_20_000_00 } });
+    await refreshCheckpoints();
+    card = (await db.accounts.get(card.id))!;
+    expect(balanceOf(card, await db.transactions.toArray())).toBe(25_000_00);
+  });
 });

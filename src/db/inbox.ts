@@ -97,7 +97,7 @@ const emptySummary = (): IngestSummary => ({
  * Version of the Android capture filter (CaptureFilter.java). 2 = wide filter (H-01): after an
  * update from 1, the phone's messages are read again once (native/capture.ts).
  */
-export const CAPTURE_FILTER_VERSION = 2;
+export const CAPTURE_FILTER_VERSION = 3;
 
 /** Payment apps whose notifications we read, by Android package. */
 export const NOTIFICATION_APPS: Record<string, string> = {
@@ -487,6 +487,20 @@ export const dismissNotice = (id: ID) =>
   db.inbox.update(id, { status: 'ignored', note: 'Notice dismissed', updatedAt: stamp() });
 
 /** Remove handled items older than `days` (keeps the inbox light; transactions are untouched). */
+/** "Set them aside": older unclear messages move to Handled (Review again brings one back). */
+export async function setAsideOlder(ids: ID[]): Promise<number> {
+  const now = stamp();
+  await db.transaction('rw', db.inbox, async () => {
+    for (const id of ids)
+      await db.inbox.update(id, {
+        status: 'ignored',
+        note: 'Older than last month',
+        updatedAt: now,
+      });
+  });
+  return ids.length;
+}
+
 export async function clearHandled(): Promise<number> {
   const handled = await db.inbox.where('status').anyOf('added', 'ignored', 'duplicate').toArray();
   await db.inbox.bulkDelete(handled.map((i) => i.id));

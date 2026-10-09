@@ -11,7 +11,7 @@ import { useStore } from '../store';
 import { useUI } from '../ui';
 
 /** How far back the first scan reads: long enough to see at least one card statement. */
-const SCAN_DAYS = 180;
+export const SCAN_DAYS = 180;
 
 type Step = 'source' | 'reading' | 'review' | 'saving';
 
@@ -41,7 +41,8 @@ export function SetupFromSms({ onBack }: { onBack: () => void }) {
     setStep('reading');
     try {
       let st = await Capture.status();
-      setFilterVersion(st.filterVersion ?? 1);
+      // Only an Android part that reads the whole window (4+) makes the later re-read unneeded.
+      setFilterVersion((st.nativeVersion ?? 0) >= 4 ? (st.filterVersion ?? 1) : undefined);
       if (!st.sms) st = await Capture.requestSms();
       if (!st.sms) {
         setError('Hisaab needs permission to read bank SMS. Personal messages are never read.');

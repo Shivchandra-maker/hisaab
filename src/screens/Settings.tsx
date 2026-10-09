@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { ConfirmButton, ErrorNote, Panel, Segmented } from '../design/components';
+import { ConfirmButton, ErrorNote, Field, Panel, Segmented } from '../design/components';
 import { Icon } from '../design/Icon';
-import { exportBackup, importBackup, resetAll, setMeta } from '../db/repo';
+import { exportBackup, resetAll, setMeta } from '../db/repo';
+import { sealBackup } from '../db/backupCrypto';
+import { useRestore } from './BackupRestore';
 import { requestPersistentStorage, storageIsPersistent } from '../db/persist';
 import { useStore } from '../store';
 import { setDemo } from '../db/demo';
 import { CaptureSettings } from './CaptureSettings';
-import { setSystemBars } from '../native/capture';
+import { isAndroidApp, saveFileOnPhone, setSystemBars } from '../native/capture';
 import { useUI } from '../ui';
 
 export type Theme = 'system' | 'light' | 'dark';
@@ -33,32 +35,38 @@ export function Settings() {
     void storageIsPersistent().then(setKept);
   }, []);
 
+  const [pass, setPass] = useState('');
   const download = async () => {
-    const json = JSON.stringify(await exportBackup(), null, 1);
-    setBackupText(json);
     try {
-      const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+      setError('');
+      const json = JSON.stringify(await exportBackup());
+      // H-21: with a passphrase the file is encrypted here, before it goes anywhere.
+      const text = pass ? await sealBackup(json, pass) : json;
+      const name = `hisaab-backup-${new Date().toISOString().slice(0, 10)}${pass ? '-protected' : ''}.json`;
+      // H-20: on the phone the system "Save to…" picker writes the file.
+      const r = await saveFileOnPhone(name, text);
+      if (r === 'saved') return toast('Backup saved');
+      if (r === 'cancelled') return;
+      setBackupText(text);
+      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
       const a = document.createElement('a');
       a.href = url;
-      a.download = `hisaab-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = name;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
-    } catch {
-      /* Some embedded views block downloads; the text box below still has the backup. */
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not make the backup.');
     }
   };
 
-  const restore = async (json: string) => {
-    try {
-      setError('');
-      const r = await importBackup(json);
-      toast(`Restored ${r.accounts} accounts and ${r.transactions} transactions`);
-      setImportText('');
-      go('home');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not restore.');
-    }
-  };
+  const {
+    restore,
+    unlock,
+    error: restoreError,
+  } = useRestore(() => {
+    setImportText('');
+    go('home');
+  });
 
   // The last flag marks screens that live in the sidebar on desktop: shown here only on phones,
   // where the tab bar has no room for them.
@@ -213,9 +221,9 @@ export function Settings() {
       <Panel title="Backup">
         <div className="stack">
           <p className="muted" style={{ margin: 0 }}>
-            Your data lives only in this browser on this device ({accounts.length} accounts,{' '}
-            {transactions.length} transactions). Download a backup now and then — clearing browser
-            data deletes it. Sync across devices comes in a later phase.
+            Your data lives only {isAndroidApp ? 'on this phone' : 'in this browser on this device'}{' '}
+            ({accounts.length} accounts, {transactions.length} payments). Save a backup now and then
+            — it’s how you move to a new phone, and the only copy if this one is lost or reset.
           </p>
           {/* D-09: storage status and its fix in one box; the two backup actions side by side. */}
           {kept !== undefined && (
@@ -240,9 +248,27 @@ export function Settings() {
               )}
             </div>
           )}
+          <Field
+            label="Passphrase (recommended)"
+            htmlFor="backup-pass"
+            hint={
+              pass
+                ? 'The file is encrypted with it. Without it nobody can open the backup — not even you, so keep it safe.'
+                : 'Without one, anyone who gets the file can read your payments and bank messages.'
+            }
+          >
+            <input
+              id="backup-pass"
+              className="input"
+              type="password"
+              autoComplete="new-password"
+              value={pass}
+              onChange={(e) => setPass(e.target.value)}
+            />
+          </Field>
           <div className="row backup-actions">
             <button className={`btn ${kept === false ? '' : 'btn-primary'}`} onClick={download}>
-              Download backup
+              {isAndroidApp ? 'Save backup' : 'Download backup'}
             </button>
             <button className="btn" onClick={() => fileRef.current?.click()}>
               Restore…
@@ -262,7 +288,8 @@ export function Settings() {
           {backupText && (
             <div className="field">
               <label className="label" htmlFor="backup-text">
-                Backup (if the download didn’t start, copy this and save it as a .json file)
+                Backup (if the download didn’t start, copy this and save it as a .json file
+                {pass ? ' — it’s encrypted' : ''})
               </label>
               <textarea
                 id="backup-text"
@@ -321,7 +348,8 @@ export function Settings() {
               />
             </div>
           </details>
-          <ErrorNote message={error} />
+          {unlock}
+          <ErrorNote message={error || restoreError} />
         </div>
       </Panel>
 

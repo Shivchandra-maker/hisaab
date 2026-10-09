@@ -18,6 +18,71 @@ export function BankCheck({ account }: { account: Account }) {
   // Cards: the SMS gives the available limit; with the credit limit we know exactly what's owed.
   // Every card without a limit asks for it — not only those whose SMS state the available limit
   // (U-13: one of four cards never showed the prompt).
+  const avail = account.lastAvailable;
+  // More available than the saved limit: the limit is wrong (usual) or you paid extra.
+  const limitTooLow =
+    card &&
+    !!account.card?.creditLimit &&
+    !!avail &&
+    avail.amount > account.card.creditLimit &&
+    !account.card.creditBalanceOk;
+  const saveLimit = async () => {
+    try {
+      setError('');
+      const v = toPaise(limit);
+      if (avail && v < avail.amount)
+        throw new Error(
+          `The limit can’t be less than the ${formatINR(avail.amount)} your bank says is available.`,
+        );
+      await saveAccount({ ...account, card: { ...account.card!, creditLimit: v } });
+      await refreshCheckpoints();
+      setLimit('');
+      toast('Card now matches your bank');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save.');
+    }
+  };
+
+  if (limitTooLow)
+    return (
+      <div className="note note-warn stack" style={{ gap: 'var(--sp-2)' }}>
+        <span>
+          Your bank said <b>{formatINR(avail!.amount)}</b> is available on {formatDate(avail!.date)}{' '}
+          — more than the <b>{formatINR(account.card!.creditLimit)}</b> limit saved here, so Hisaab
+          can’t tell what you owe from it. What is this card’s credit limit?
+        </span>
+        <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+          <label className="sr-only" htmlFor={`lim-${account.id}`}>
+            Credit limit
+          </label>
+          <input
+            id={`lim-${account.id}`}
+            className="input num"
+            inputMode="decimal"
+            placeholder="Credit limit, e.g. 2,00,000"
+            style={{ maxWidth: 220 }}
+            value={limit}
+            onChange={(e) => setLimit(cleanAmountInput(e.target.value, limit))}
+          />
+          <button className="btn btn-primary" disabled={!limit} onClick={saveLimit}>
+            Save limit
+          </button>
+        </div>
+        <button
+          className="link-btn"
+          style={{ alignSelf: 'flex-start' }}
+          onClick={async () => {
+            await saveAccount({ ...account, card: { ...account.card!, creditBalanceOk: true } });
+            await refreshCheckpoints();
+            toast('Noted: the card holds money you paid extra');
+          }}
+        >
+          The limit is right — I paid more than I owed
+        </button>
+        <ErrorNote message={error} />
+      </div>
+    );
+
   if (card && !account.card?.creditLimit)
     return (
       <div className="note note-cycle stack" style={{ gap: 'var(--sp-2)' }}>
@@ -46,23 +111,7 @@ export function BankCheck({ account }: { account: Account }) {
             value={limit}
             onChange={(e) => setLimit(cleanAmountInput(e.target.value, limit))}
           />
-          <button
-            className="btn btn-primary"
-            disabled={!limit}
-            onClick={async () => {
-              try {
-                setError('');
-                const v = toPaise(limit);
-                if (account.lastAvailable && v < account.lastAvailable.amount)
-                  throw new Error('The limit can’t be less than what’s available.');
-                await saveAccount({ ...account, card: { ...account.card!, creditLimit: v } });
-                await refreshCheckpoints();
-                toast('Card now matches your bank');
-              } catch (e) {
-                setError(e instanceof Error ? e.message : 'Could not save.');
-              }
-            }}
-          >
+          <button className="btn btn-primary" disabled={!limit} onClick={saveLimit}>
             Save
           </button>
         </div>

@@ -74,6 +74,9 @@ async function calibrate(accountId: ID, amount: Paise, date: ISODate, liability:
   });
 }
 
+/** A setup running in this session: the screen running it stays on screen, whatever the stage. */
+let running: 'fresh' | 'resume' | null = null;
+
 export async function finishSetup(
   choices: SetupChoice[],
   messages: CapturedMessage[],
@@ -87,9 +90,20 @@ export async function finishSetup(
   const today = todayIST();
   const ids = new Map<string, ID>();
   const kept = choices.filter((c) => c.keep && !c.mergeInto);
-  let order = await db.accounts.count();
+  // H-24: setup can be stopped half-way (app closed, phone killed it). Every stage is recorded so
+  // the next open finishes the job instead of starting over, and accounts are never made twice.
+  running = 'fresh';
+  await setMeta('setupStage', 'accounts');
+  if (opts.filterVersion) await setMeta('setupFilterVersion', opts.filterVersion);
+  const existing = (await db.accounts.toArray()).filter((a) => !a.deletedAt);
+  let order = existing.length;
   for (const c of kept) {
     const f = c.found;
+    const same = sameAccount(existing, f);
+    if (same) {
+      ids.set(f.key, same.id);
+      continue;
+    }
     const draft: Omit<Account, 'id' | 'createdAt' | 'updatedAt'> = {
       name: c.name.trim() || f.name,
       kind: f.kind,
@@ -141,30 +155,95 @@ export async function finishSetup(
   await setMeta('notMine', [...notMine]);
   await setMeta('autoAdd', true);
 
-  // File every message, then add everything that's ready.
+  await setMeta('setupStage', 'reading');
+  const r = await fileAndFinish(
+    messages,
+    opts.onProgress,
+    kept.map((c) => c.found),
+    ids,
+  );
+  return { accounts: kept.length + (opts.cash ? 1 : 0), ...r };
+}
+
+/** The account a found one already became (an earlier, interrupted setup). */
+function sameAccount(accounts: Account[], f: FoundAccount): Account | undefined {
+  return accounts.find(
+    (a) =>
+      a.kind === f.kind &&
+      (f.last4
+        ? a.last4 === f.last4
+        : !a.last4 && (a.institution ?? '') === (f.institution ?? '') && a.name === f.name),
+  );
+}
+
+/** File the messages, add what's ready, line balances up with the bank, mark setup done. */
+async function fileAndFinish(
+  messages: CapturedMessage[],
+  onProgress: ((label: string, done: number, total: number) => void) | undefined,
+  found: FoundAccount[],
+  ids: Map<string, ID>,
+): Promise<{ added: number; needYou: number }> {
+  // Messages already filed are skipped by their text, so filing again after a stop is safe.
   const total = messages.length;
   for (let i = 0; i < total; i += 150) {
     await ingestCaptured(messages.slice(i, i + 150));
-    opts.onProgress?.('Reading payments', Math.min(i + 150, total), total);
+    onProgress?.('Reading payments', Math.min(i + 150, total), total);
   }
+  await setMeta('setupStage', 'adding');
   await setAsideNotMine();
-  const added = await addAllReady((d, t) => opts.onProgress?.('Adding payments', d, t));
+  const added = await addAllReady((d, t) => onProgress?.('Adding payments', d, t));
 
   // Cards: start from the last statement's amount due; then every balance the bank stated in a
   // message (bank/wallet balances, card available limits) re-anchors the account.
-  for (const c of kept) {
-    const id = ids.get(c.found.key)!;
-    if (!c.found.balance && c.found.statementDue)
-      await calibrate(id, c.found.statementDue.amount, c.found.statementDue.date, true);
+  for (const f of found) {
+    const id = ids.get(f.key);
+    const acc = id ? await db.accounts.get(id) : undefined;
+    if (acc && !acc.check && !f.balance && f.statementDue)
+      await calibrate(acc.id, f.statementDue.amount, f.statementDue.date, true);
   }
   await refreshCheckpoints();
 
   await setMeta('onboarded', true);
   await setMeta('quickSetupDone', true);
-  // Setup just read the phone's messages through its filter: no need to read them again.
-  if (opts.filterVersion) await setMeta('nativeFilterRead', opts.filterVersion);
+  // Setup just read the phone's messages through its filter: the one-time re-read after an
+  // update only needs to look further back than setup did.
+  const fv = await getMeta<number>('setupFilterVersion', 0);
+  if (fv) await setMeta('nativeFilterRead2', fv);
+  await setMeta('setupStage', 'done');
+  running = null;
   const needYou = await db.inbox.where('status').equals('new').count();
-  return { accounts: kept.length + (opts.cash ? 1 : 0), added, needYou };
+  return { added, needYou };
+}
+
+/**
+ * Was a setup from SMS stopped half-way? True when accounts were made but setup never finished
+ * (also for installs from before setup kept its stage: accounts + auto-add on, not onboarded).
+ */
+export function setupInterrupted(meta: Record<string, unknown>, accounts: number): boolean {
+  if (meta.onboarded === true) return false;
+  if (running) return running === 'resume';
+  const stage = meta.setupStage;
+  if (stage === 'reading' || stage === 'adding') return true;
+  return stage !== 'done' && accounts > 0 && meta.autoAdd === true;
+}
+
+/**
+ * H-24: finish a setup that was stopped. `messages` are read again from the phone (pasted ones
+ * can't be, but whatever was filed before the stop is still in the Inbox and gets added).
+ */
+export async function resumeSetup(
+  messages: CapturedMessage[],
+  onProgress?: (label: string, done: number, total: number) => void,
+): Promise<{ added: number; needYou: number }> {
+  running = 'resume';
+  const found = scanMessages(messages);
+  const accounts = (await db.accounts.toArray()).filter((a) => !a.deletedAt);
+  const ids = new Map<string, ID>();
+  for (const f of found) {
+    const a = sameAccount(accounts, f);
+    if (a) ids.set(f.key, a.id);
+  }
+  return fileAndFinish(messages, onProgress, found, ids);
 }
 
 /** Messages about accounts you said aren't yours stay out of the Inbox. */

@@ -18,6 +18,8 @@ import { StyleGuide } from './screens/StyleGuide';
 import { Transactions } from './screens/Transactions';
 import { TxnSheet } from './screens/TxnSheet';
 import { Welcome } from './screens/Welcome';
+import { ResumeSetup } from './screens/ResumeSetup';
+import { setupInterrupted } from './db/setup';
 import { WhereMoney } from './screens/WhereMoney';
 import { handleBackButton, isAndroidApp, startCapture } from './native/capture';
 import { QuickSetup } from './screens/QuickSetup';
@@ -65,7 +67,7 @@ type Editor =
   | null;
 
 export function App() {
-  const { today, isSample, isDemo, onboarded, meta, inboxNew, needs } = useStore();
+  const { today, isSample, isDemo, onboarded, meta, inboxNew, needs, accounts } = useStore();
   const [route, setRoute] = useState(readRoute);
   const [month, setMonth] = useState(monthOf(today));
   const [editor, setEditor] = useState<Editor>(null);
@@ -221,7 +223,7 @@ export function App() {
   if (!onboarded) {
     return (
       <UICtx.Provider value={ui}>
-        <Welcome />
+        {setupInterrupted(meta, accounts.length) ? <ResumeSetup /> : <Welcome />}
         {editors}
       </UICtx.Provider>
     );

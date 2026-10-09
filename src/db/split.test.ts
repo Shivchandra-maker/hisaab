@@ -1,14 +1,18 @@
 import 'fake-indexeddb/auto';
 import {
+  applyRulesToPast,
   db,
   deleteTransaction,
+  learnRule,
+  recategorise,
+  samePayee,
   resetAll,
   restoreTransaction,
   saveAccount,
   saveTransaction,
   startDebt,
 } from './repo';
-import { notALoan, paidForOthers, unsplit, updateLoanEntry } from './loans';
+import { notALoan, paidForOthers, resolvePersonPayment, unsplit, updateLoanEntry } from './loans';
 import { balanceOf, debtBalance, summariseMonth } from '../domain/ledger';
 import { findDuplicate } from '../domain/sms/match';
 import type { Account, Transaction } from '../domain/types';
@@ -261,5 +265,98 @@ describe('Editing lent & borrowed entries', () => {
     expect(await notALoan(t.id)).toBe('spending');
     expect(await db.transactions.get(t.id)).toMatchObject({ kind: 'expense', amount: 5_000_00 });
     expect(await debts()).toHaveLength(0);
+  });
+});
+
+describe('U-27: a category choice fixes the payee’s past payments', () => {
+  it('finds other payments at the same payee and moves them, with undo', async () => {
+    const add = (date: string, categoryId: string, merchant = 'SWIGGY') =>
+      saveTransaction(
+        {
+          ...base,
+          kind: 'expense',
+          date,
+          amount: 300_00,
+          accountId: hdfc.id,
+          merchant,
+          categoryId,
+          source: 'sms',
+        },
+        { learn: false },
+      );
+    const a = await add('2026-09-01', 'other');
+    const b = await add('2026-09-05', 'shopping');
+    await add('2026-09-06', 'food'); // already right
+    await add('2026-09-07', 'other', 'Zomato'); // another payee
+    const others = samePayee(await all(), 'Swiggy', 'food', false);
+    expect(others.map((t) => t.id).sort()).toEqual([a.id, b.id].sort());
+    const undo = await recategorise(others, 'food');
+    expect((await db.transactions.get(a.id))?.categoryId).toBe('food');
+    await undo();
+    expect((await db.transactions.get(b.id))?.categoryId).toBe('shopping');
+  });
+
+  it('once: rules are applied to payments added from messages, not to typed ones', async () => {
+    await saveTransaction(
+      {
+        ...base,
+        kind: 'expense',
+        date: '2026-09-01',
+        amount: 100_00,
+        accountId: hdfc.id,
+        merchant: 'Swiggy',
+        categoryId: 'other',
+        source: 'sms',
+      },
+      { learn: false },
+    );
+    const typed = await saveTransaction(
+      {
+        ...base,
+        kind: 'expense',
+        date: '2026-09-02',
+        amount: 100_00,
+        accountId: hdfc.id,
+        merchant: 'Swiggy',
+        categoryId: 'shopping',
+      },
+      { learn: false },
+    );
+    await learnRule('Swiggy', 'food');
+    expect(await applyRulesToPast()).toBe(1);
+    expect((await db.transactions.get(typed.id))?.categoryId).toBe('shopping');
+    expect(await applyRulesToPast()).toBe(0);
+  });
+});
+
+describe('U-29: money from a person can be borrowed, and paid back later', () => {
+  it('income → borrowed, a later payment → paid back; neither is income or spending', async () => {
+    const got = await saveTransaction({
+      ...base,
+      kind: 'income',
+      date: '2026-10-01',
+      amount: 5_000_00,
+      accountId: hdfc.id,
+      merchant: 'Ravi',
+      categoryId: 'salary',
+    });
+    await resolvePersonPayment(got.id, 'Ravi', 'borrowed');
+    const back = await saveTransaction({
+      ...base,
+      kind: 'expense',
+      date: '2026-10-06',
+      amount: 5_000_00,
+      accountId: hdfc.id,
+      merchant: 'Ravi',
+      categoryId: 'other',
+    });
+    await resolvePersonPayment(back.id, 'Ravi', 'repay_them');
+    const txns = await all();
+    const oct = summariseMonth(txns, '2026-10');
+    expect(oct.income).toBe(0);
+    expect(oct.spent).toBe(12_000_00); // only Croma
+    const d = (await debts()).find((x) => x.person === 'Ravi')!;
+    expect(d.direction).toBe('borrowed');
+    expect(debtBalance(d, txns).outstanding).toBe(0);
   });
 });

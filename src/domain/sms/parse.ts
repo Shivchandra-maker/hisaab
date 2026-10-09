@@ -73,14 +73,27 @@ export interface ParsedSms {
   statement?: { totalDue?: Paise; minDue?: Paise; dueDate?: ISODate };
   /** 0–1: how sure the parser is that this is a real, complete transaction. */
   confidence: number;
+  /** Spent in another currency; the ₹ amount isn't in the message (`amount` is then unset). */
+  foreign?: { currency: string; amount: number };
 }
 
 /** Bump when parsing changes, so messages already in the Inbox are read again with the new rules. */
-export const PARSER_VERSION = 7;
+export const PARSER_VERSION = 8;
 
 /* ───────────────────────── helpers ───────────────────────── */
 
-const AMOUNT = String.raw`(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)`;
+// "Rs..50" / "Rs..6" (paise with a stray dot) are amounts too, not a reason to skip to the balance.
+const AMOUNT = String.raw`(?:rs\.?|inr|₹)\s*(\d[\d,]*(?:\.\d{1,2})?|\.\d{1,2})`;
+/**
+ * Short and unusual ways banks say money moved (H-15): "Dr INR", "Rs.80.00 Dr.", "UPI debit:",
+ * "DEBIT:Rs.", "UPI Credit:INR", "NEFT credit of", "CREDIT with amount", "has credit for",
+ * "has a debit by transfer", "Rs.1100credited", "Payment of Rs … successful", HSBC "used at".
+ */
+const SHORT_MOVE =
+  /\b(?:dr|cr)\.?\s*(?:inr|rs\.?|₹)|(?:inr|rs\.?|₹)\s*[\d,.]+\s*(?:dr|cr)\b|\b(?:upi\s+)?(?:debit|credit)\s*:|\bhas\s+(?:a\s+)?(?:credit|debit)\b|\b(?:credit|debit)\s+(?:with amount|of (?:inr|rs|₹)|by (?:transfer|cheque|cash))|\d(?:credited|debited)\b|\bpayment\s+(?:of\s+)?(?:inr|rs\.?|₹)\s*[\d,.]+[^.]{0,80}?\b(?:successful|confirmed|done)\b|\bpayment successful\b|\bused at\b|\bthank you for using\b[^.]{0,40}\bcard\b|\btransaction (?:number|no\.?)\b[^.]{0,30}\bfor (?:inr|rs\.?|₹)|\brefunded\b/i;
+/** Spends in another currency on an Indian card: the rupee amount comes on the statement. */
+const FOREIGN =
+  /\b(USD|EUR|GBP|AED|SGD|AUD|CAD|JPY|CHF|THB|MYR|HKD|NZD|SAR|QAR)\s*(\d[\d,]*(?:\.\d+)?|\.\d+)/;
 const toPaise = (s: string): Paise => Math.round(Number(s.replace(/,/g, '')) * 100);
 
 const BANKS: [RegExp, string][] = [
@@ -236,6 +249,11 @@ function findBalance(text: string): { balance?: Paise; isLimit?: boolean } {
 function findRef(text: string): string | undefined {
   const axis = text.match(/UPI\/P2[AM]\/(\d{9,})/i);
   if (axis) return axis[1];
+  // "UPI: 123456789012", "UPI/DR/412345678901/…", "Info: UPI/ICIC/412345678901/…", "IMPS:ABC123456" (A26)
+  const short = text.match(
+    /\b(?:upi\s*[:/]\s*(?:(?:dr|cr|[a-z]{4})\/)?|imps\s*[:/]\s*)([a-z0-9]{9,})\b/i,
+  );
+  if (short && /\d{6,}/.test(short[1]!)) return short[1]!.toUpperCase();
   const m = text.match(
     /\b(?:upi\s*ref(?:erence)?(?:\s*no\.?)?|ref(?:erence)?(?:\s*(?:no|num(?:ber)?|id))?\.?|refno|rrn|utr(?:\s*no\.?)?|txn\s*(?:id|no)|transaction\s*id|imps\s*ref(?:\s*no)?)[\s:.#-]*([a-z0-9]{6,})\b/i,
   );
@@ -392,7 +410,8 @@ export function stripLinkPreview(input: string): string {
 }
 
 export function parseSms(input: string): ParsedSms {
-  const text = stripLinkPreview(input);
+  // SBI Card writes "𝗌𝗉𝖾𝗇𝗍" in maths letters: NFKC turns them back into plain "spent" (A28).
+  const text = stripLinkPreview(input.normalize('NFKC'));
   const flat = text.replace(/\s+/g, ' ');
   const lower = flat.toLowerCase();
   const base = (): ParsedSms => ({ kind: 'ignore', instrument: 'unknown', confidence: 0 });
@@ -421,6 +440,12 @@ export function parseSms(input: string): ParsedSms {
   )
     return { ...base(), reason: 'Declined or failed — no money moved', bank };
   if (looksLikeScam(flat)) return { ...base(), reason: 'Looks like a scam message', bank };
+  // IPO money blocked (ASBA) and gift vouchers: nothing left your account yet (A21).
+  if (
+    /\b(asba|(?:is|has been|amount)\s+blocked|e-?vouchers?|gift card code)\b/i.test(flat) &&
+    !/\b(debited|deducted|spent|withdrawn)\b/i.test(flat)
+  )
+    return { ...base(), reason: 'Blocked or voucher — no money moved', bank };
 
   // 2a. Card statement generated: tells us the statement day, due date and amount due.
   if (
@@ -480,7 +505,7 @@ export function parseSms(input: string): ParsedSms {
   const recurringWords =
     /\b(mandate|auto[- ]?pay|autodebit|auto[- ]debit|standing instruction|e-?mandate|\bsi\b|nach|ecs|recurring|subscription)\b/i;
   const futureWords =
-    /\b(will be|shall be|is scheduled|scheduled|due on|upcoming|to be debited|pre-?debit|reminder|has been (?:successfully )?(?:created|registered|set ?up|activated|revoked|cancelled|paused)|successfully (?:created|registered|set ?up)|revoked|cancelled|paused)\b/i;
+    /\b(for processing|will be|shall be|is scheduled|scheduled|due on|upcoming|to be debited|pre-?debit|reminder|has been (?:successfully )?(?:created|registered|set ?up|activated|revoked|cancelled|paused)|successfully (?:created|registered|set ?up)|revoked|cancelled|paused)\b/i;
   if (
     recurringWords.test(flat) &&
     futureWords.test(flat) &&
@@ -545,6 +570,7 @@ export function parseSms(input: string): ParsedSms {
     !/\b(debited|credited|spent|sent|paid|received|withdrawn|deposited|transferred|purchase|added|loaded|top[- ]?up|refund|reversed|cashback)\b/i.test(
       flat,
     ) &&
+    !SHORT_MOVE.test(flat) &&
     !/\b(offer|apply|eligible|pre-?approved|loan of|upgrade)\b/i.test(flat)
   ) {
     let b = findBalance(flat);
@@ -578,7 +604,7 @@ export function parseSms(input: string): ParsedSms {
   const moneyVerb =
     /\b(debited|credited|spent|sent|paid|received|withdrawn|deposited|transferred|purchase|txn|transaction|refund|reversed|reversal|cashback|payment|added to|loaded|top[- ]?up)\b/i;
   if (
-    !moneyVerb.test(flat) ||
+    (!moneyVerb.test(flat) && !SHORT_MOVE.test(flat)) ||
     (/\b(pre-?approved|apply now|offer|click here|limited period|get up to|eligible for|upgrade your|win\b|lucky|congratulations|loan of|insta loan)\b/i.test(
       flat,
     ) &&
@@ -586,13 +612,39 @@ export function parseSms(input: string): ParsedSms {
   )
     return { ...base(), reason: 'Promotion or information — no money moved', bank };
 
-  const amount = findAmount(flat);
+  // Autopay set-ups that take a small first charge: that charge is what moved, not the limit
+  // ("activated … for Rs. 75000 … An initial amount of Rs. 2.00 has been debited").
+  const initial = flat.match(
+    new RegExp(String.raw`\binitial (?:amount|charge|debit|payment) of ${AMOUNT}`, 'i'),
+  );
+  const amount = initial ? toPaise(initial[1]!) : findAmount(flat);
+  const fx = flat.match(FOREIGN);
+  if (!amount && fx) {
+    // Spent abroad / online in another currency: a real payment whose rupee amount we don't know
+    // yet. It waits in the Inbox for you to type the ₹ amount from the card app or statement.
+    const f = findLast4(flat);
+    return {
+      kind: 'debit',
+      reason: `Spent in ${fx[1]} — enter the ₹ amount`,
+      instrument: f.instrument,
+      last4: f.last4,
+      bank,
+      date: findDate(flat),
+      time: findTime(flat),
+      merchant: findCounterparty(flat, 'debit').merchant,
+      mode: 'card',
+      foreign: { currency: fx[1]!, amount: Math.round(Number(fx[2]!.replace(/,/g, '')) * 100) },
+      confidence: 0.4,
+    };
+  }
   if (!amount) return { ...base(), reason: 'No amount found', bank };
 
   const found = findLast4(flat);
   const walletName = /\bwallet\b/i.test(flat)
     ? WALLETS.find(([re]) => re.test(flat))?.[1]
-    : undefined;
+    : /\b(?:apay|amazon\s?pay)\s+balance\b/i.test(flat)
+      ? 'Amazon Pay' // "using Apay Balance … SMS by Juspay" (A8)
+      : undefined;
   const date = findDate(flat);
   const ref = findRef(text);
   const { balance, isLimit } = findBalance(flat);
@@ -621,10 +673,10 @@ export function parseSms(input: string): ParsedSms {
 
   // 6. Direction: whichever money word appears first decides.
   const debitIdx = lower.search(
-    /\b(debited|spent|sent|paid|withdrawn|purchase|deducted|charged|used at|txn of|transaction of|transferred from|trf from|dr\b|debit\b)/,
+    /\b(debited|spent|sent|paid|withdrawn|purchase|deducted|charged|used at|txn of|transaction of|transferred from|trf from|dr\b|debit\b|payment successful|payment (?:of )?(?:inr|rs\.?|₹))/,
   );
   const creditIdx = lower.search(
-    /\b(credited|received|deposited|refund|reversed|reversal|cashback|cr\b|added to)/,
+    /\b(credited|received|deposited|refund|reversed|reversal|cashback|cr\b|added to|credit\s*:|credit (?:with amount|of|by|for)|has (?:a )?credit)|\dcredited/,
   );
   let direction: 'debit' | 'credit';
   if (debitIdx === -1 && creditIdx === -1)
@@ -632,8 +684,19 @@ export function parseSms(input: string): ParsedSms {
   if (debitIdx === -1) direction = 'credit';
   else if (creditIdx === -1) direction = 'debit';
   else direction = debitIdx < creditIdx ? 'debit' : 'credit';
+  // "Jerry has received Rs 6000 from your A/c", "credited to the beneficiary": money out (A9).
+  if (
+    /\bhas received (?:inr|rs\.?|₹)?\s*[\d,.]+.{0,30}\bfrom your (?:a\/c|acc(?:oun)?t|card)\b/i.test(
+      flat,
+    ) ||
+    /\bcredited to (?:the )?(?:beneficiary|payee)\b/i.test(flat)
+  )
+    direction = 'debit';
+  // "Net interest INR 248 paid on your Deposit": interest earned, money in (A15).
+  if (/\binterest\b.{0,30}\bpaid on your\b.{0,20}\b(?:deposit|fd|account|a\/c)\b/i.test(flat))
+    direction = 'credit';
   // "Refund of Rs.. credited", "reversed" always mean money in.
-  const isRefund = /\b(refund|reversed|reversal|chargeback)\b/i.test(flat);
+  const isRefund = /\b(refund|refunded|reversed|reversal|chargeback)\b/i.test(flat);
   if (isRefund) direction = 'credit';
   const isCashback = /\bcashback\b/i.test(flat) && direction === 'credit';
 

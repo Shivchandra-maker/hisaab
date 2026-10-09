@@ -526,3 +526,162 @@ describe('balance-enquiry replies (U-11)', () => {
     }
   });
 });
+
+/** H-15 / PARSER_VERSION 8: our own variants of the formats the corpus found missing. */
+describe('H-15: more Indian bank formats', () => {
+  const p = (m: string) => parseSms(m);
+  it('short Dr/Cr forms', () => {
+    expect(p('Dr INR 4,250.00 from A/c X9012 on 03-OCT-2026')).toMatchObject({
+      kind: 'debit',
+      amount: 425000,
+    });
+    expect(p('Cr INR 1,500.00 to A/c X9012 04-OCT-2026')).toMatchObject({
+      kind: 'credit',
+      amount: 150000,
+    });
+    expect(
+      p('Rs.65.00 Dr. from A/c XX445566 on 02-10-2026. AvlBal:Rs902.10. Ref:61234567890'),
+    ).toMatchObject({ kind: 'debit', amount: 6500, last4: '5566' });
+    expect(
+      p(
+        'Acct XXX654 Dr. INR 310.00 on 05/10/26 to TEA POINT; UPI: 612345678901; Bal INR 7,100.00.',
+      ),
+    ).toMatchObject({ kind: 'debit', amount: 31000, ref: '612345678901' });
+  });
+  it('"UPI debit:", "DEBIT:Rs.", "UPI Credit:"', () => {
+    expect(
+      p('UPI debit:Rs.420.00 A/c X8811, 05-10-26 11:05:09 RRN: 612233445566 Bal:Rs.9,000.00'),
+    ).toMatchObject({ kind: 'debit', amount: 42000 });
+    expect(p('A/c X8811 DEBIT:Rs.212.50 BAKE HOUSE Bal:Rs.8,787.50')).toMatchObject({
+      kind: 'debit',
+      amount: 21250,
+    });
+    expect(
+      p(
+        'UPI Credit:INR Rs.2500.00 in A/c X8811. Info: UPI/ABCD/612345000111/ Some Payer on 06-10-26 09:00:00. Final balance is Rs.11287.50',
+      ),
+    ).toMatchObject({ kind: 'credit', amount: 250000, ref: '612345000111' });
+  });
+  it('NEFT/RTGS "credit of", "CREDIT with amount", SBI "has credit for", "has a debit by transfer"', () => {
+    expect(
+      p(
+        'Dear Customer, there is an NEFT credit of INR 61,200.00 in your account 321xxxx9988 on 1/10/2026.Available Balance:INR 80,000.00',
+      ),
+    ).toMatchObject({ kind: 'credit', amount: 6120000 });
+    expect(
+      p(
+        'Account No. XXXXXXXX9988 CREDIT with amount Rs. 4200.00 on 01-10-2026. Balance: Rs.12000.00.',
+      ),
+    ).toMatchObject({ kind: 'credit', amount: 420000 });
+    expect(
+      p(
+        'Your A/C XXXXX778899 has credit for BY SALARY of Rs 52,000.00 on 30/09/26. Avl Bal Rs 60,100.00.-SBI',
+      ),
+    ).toMatchObject({ kind: 'credit', amount: 5200000 });
+    expect(
+      p(
+        'Dear Customer, Your A/C XXXXX778899 has a debit by transfer of Rs 150.00 on 02/10/26. Avl Bal Rs 59,950.00.-SBI',
+      ),
+    ).toMatchObject({ kind: 'debit', amount: 15000 });
+    expect(
+      p(
+        'Hi,Rs.2300credited in your A/c XX7788 on 02OCT2026 10:01:00 using cash deposit machine. Current Bal: Rs.5000.00',
+      ),
+    ).toMatchObject({ kind: 'credit', amount: 230000 });
+  });
+  it('"Rs..50" is fifty paise, not the balance', () => {
+    expect(p('Rs..75 debited from A/c XX4410 by Transfer. Avl Bal Rs.1,204.33')).toMatchObject({
+      kind: 'debit',
+      amount: 75,
+    });
+  });
+  it('Amazon Pay balance via Juspay is a wallet payment', () => {
+    expect(
+      p(
+        'Payment of Rs 640.00 using Apay Balance successful at Grocer. Updated Balance is Rs 360.00 - SMS by Juspay',
+      ),
+    ).toMatchObject({
+      kind: 'debit',
+      amount: 64000,
+      walletName: 'Amazon Pay',
+      instrument: 'wallet',
+    });
+  });
+  it('foreign currency spend waits for the ₹ amount', () => {
+    const r = p(
+      'USD 12.50 spent using ICICI Bank Card XX6612 on 04-Oct-26 on SOFTWARE CO. Avl Limit: INR 1,20,000.00.',
+    );
+    expect(r).toMatchObject({
+      kind: 'debit',
+      last4: '6612',
+      foreign: { currency: 'USD', amount: 1250 },
+    });
+    expect(r.amount).toBeUndefined();
+  });
+  it('maths-letter text (SBI Card) reads normally', () => {
+    expect(
+      p('Rs.120.00 𝗌𝗉𝖾𝗇𝗍 𝗈𝗇 𝗒𝗈𝗎𝗋 𝖲𝖡𝖨 𝖢𝗋𝖾𝖽𝗂𝗍 𝖢𝖺𝗋𝖽 𝖾𝗇𝖽𝗂𝗇𝗀 4411 at CAFE on 03/10/26'),
+    ).toMatchObject({ kind: 'debit', amount: 12000, last4: '4411' });
+  });
+  it('direction traps: "X has received … from your A/c", "credited to the beneficiary" are money out', () => {
+    expect(
+      p('Acme Fund has received Rs 2000.00 from your A/c 4455 via NEFT on 02-Oct-2026 10:00:00.'),
+    ).toMatchObject({ kind: 'debit', amount: 200000 });
+    expect(
+      p(
+        'NEFT Transaction with reference number N1234567 for Rs. 9000.00 has been credited to the beneficiary account on 02-Oct-26.',
+      ),
+    ).toMatchObject({ kind: 'debit', amount: 900000 });
+  });
+  it('interest paid on a deposit is money in', () => {
+    expect(
+      p('Net interest INR 120.40 paid on your Deposit No 400***112233 on 30/09/26.'),
+    ).toMatchObject({ kind: 'credit', amount: 12040 });
+  });
+  it('blocked IPO money, vouchers and mandates received for processing are not payments', () => {
+    expect(
+      p(
+        'Your ASBA application for XYZ is received and Application value of Rs 15000 is blocked in your bank account on 01/10/2026.',
+      ).kind,
+    ).toBe('ignore');
+    expect(
+      p('You have received a Shopping E-voucher Rs.250/- from Rewards programme. Code ABCD').kind,
+    ).toBe('ignore');
+    expect(
+      p(
+        'Auto Pay NACH Mandate : Rs. 50000.00 UMRN:ABCD123 To:Some Fund Freq ADHO received today for processing.',
+      ).kind,
+    ).toBe('autopay_notice');
+  });
+  it('autopay set-up with a first charge: the charge is the amount', () => {
+    expect(
+      p(
+        'Dear Customer, auto pay facility has been successfully activated on your Card XX1122 for Rs. 50000.00, from Cloud Co. An initial amount of Rs. 1.00 has been debited from your account.',
+      ),
+    ).toMatchObject({ kind: 'debit', amount: 100 });
+  });
+  it('"used at", "Thank you for using … Card", "transaction number … for Rs", "refunded to your card"', () => {
+    expect(
+      p('Your HSBC creditcard xxxxx9911 used at SHOPCO for INR 210.00 on 01-10-26.'),
+    ).toMatchObject({ kind: 'debit', amount: 21000 });
+    expect(
+      p('Thank you for using HSBC Debit Card XXXXX88xx at STORE . for INR 75.00 on 01-10-26.'),
+    ).toMatchObject({ kind: 'debit', amount: 7500 });
+    expect(
+      p(
+        'Dear Customer, transaction number 9876 for Rs.240.00 by SBI Debit Card 1234 done at shop on 01Oct26 at 10:00:00. Your updated available balance is Rs.900.00',
+      ),
+    ).toMatchObject({ kind: 'debit', amount: 24000 });
+    expect(
+      p('INR 40 from Lounge refunded to your Kotak Credit Card x7711 on 01-Oct-2026.'),
+    ).toMatchObject({ kind: 'credit', amount: 4000, isRefund: true });
+  });
+  it('payment gateways: "Payment Successful! Rs …", "Payment INR … confirmed"', () => {
+    expect(
+      p('Payment Successful! Rs. 1500.00 from A/c ****7788 to SOMECO via NetBanking.'),
+    ).toMatchObject({ kind: 'debit', amount: 150000 });
+    expect(
+      p('Payment INR 99.00 (ID:123456) confirmed for order #A1 on ShopApp. Powered by Gateway'),
+    ).toMatchObject({ kind: 'debit', amount: 9900 });
+  });
+});

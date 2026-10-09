@@ -54,4 +54,26 @@ describe('inboxNeeds', () => {
     expect(h.title).toBe('New account found');
     expect(h.detail).toMatch(/ICICI Credit Card ••5566/);
   });
+
+  it('U-28: only this month and last month need you; older questions are kept but not counted', async () => {
+    const today = todayIST();
+    const all = await read(true);
+    // An unclear message from five months ago (unknown account, can't be added on its own).
+    await ingestMessages(['Rs.640.00 debited from A/c XX9911 on 05-05-26 to VPA kirana@ybl.'], {
+      source: 'paste',
+      receivedAt: '2026-05-05',
+    });
+    const withToday = inboxNeeds({
+      inbox: await db.inbox.toArray(),
+      transactions: await db.transactions.toArray(),
+      accounts: await db.accounts.toArray(),
+      rules: await db.rules.toArray(),
+      accountHints: {},
+      autoAdd: true,
+      today,
+    });
+    expect(withToday.count).toBe(all.count);
+    expect(withToday.older.map((i) => i.parsed.amount)).toContain(640_00);
+    expect(withToday.since).toMatch(/-01$/);
+  });
 });

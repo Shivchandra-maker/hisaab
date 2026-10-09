@@ -131,6 +131,76 @@ export async function saveTransaction(
 
 /* ───────────────────────── Merchant rules ───────────────────────── */
 
+/**
+ * Other payments at the same payee that a new category choice should also fix (U-27): same
+ * payee (by merchant key), same kind of money (spending/refunds vs income), not split across
+ * categories, and not already in that category.
+ */
+export function samePayee(
+  txns: Transaction[],
+  merchant: string | undefined,
+  categoryId: ID | undefined,
+  income: boolean,
+  exceptId?: ID,
+): Transaction[] {
+  const key = merchant ? merchantKey(merchant) : '';
+  if (key.length < 2 || !categoryId) return [];
+  return txns.filter(
+    (t) =>
+      t.id !== exceptId &&
+      !t.deletedAt &&
+      !!t.merchant &&
+      (income ? t.kind === 'income' : t.kind === 'expense' || t.kind === 'refund') &&
+      !(t.splits && t.splits.length > 1) &&
+      t.categoryId !== categoryId &&
+      merchantKey(t.merchant) === key,
+  );
+}
+
+/** Put these payments in `categoryId`; returns an undo that restores each one's old category. */
+export async function recategorise(
+  txns: Transaction[],
+  categoryId: ID,
+): Promise<() => Promise<void>> {
+  const before = txns.map((t) => [t.id, t.categoryId] as const);
+  const now = stamp();
+  await db.transaction('rw', db.transactions, async () => {
+    for (const t of txns) await db.transactions.update(t.id, { categoryId, updatedAt: now });
+  });
+  return async () => {
+    await db.transaction('rw', db.transactions, async () => {
+      for (const [id, c] of before)
+        await db.transactions.update(id, { categoryId: c, updatedAt: stamp() });
+    });
+  };
+}
+
+/**
+ * Once (U-27): before this version a category you picked only applied to new payments. Bring
+ * earlier payments added from messages in line with each payee's rule (your latest choice).
+ * Entries you typed yourself keep their category.
+ */
+export async function applyRulesToPast(): Promise<number> {
+  if (await getMeta<boolean>('rulesAppliedPast', false)) return 0;
+  const [rules, txns, cats] = await Promise.all([
+    db.rules.toArray(),
+    db.transactions.toArray(),
+    db.categories.toArray(),
+  ]);
+  const income = new Set(cats.filter((c) => c.kind === 'income').map((c) => c.id));
+  let n = 0;
+  for (const r of rules) {
+    if (r.deletedAt || !r.categoryId) continue;
+    const past = samePayee(txns, r.name, r.categoryId, income.has(r.categoryId)).filter(
+      (t) => t.source === 'sms' || t.source === 'notification' || t.source === 'import',
+    );
+    if (past.length) await recategorise(past, r.categoryId);
+    n += past.length;
+  }
+  await setMeta('rulesAppliedPast', true);
+  return n;
+}
+
 /** Create or update the rule for a merchant. The latest choice wins. */
 export async function learnRule(merchant: string, categoryId: ID): Promise<void> {
   const key = merchantKey(merchant);
@@ -564,11 +634,20 @@ export async function importBackup(
     await db.accounts.bulkAdd(b.data.accounts);
     await db.transactions.bulkAdd(b.data.transactions);
     await db.categories.bulkAdd(b.data.categories ?? defaultCategories);
+    await db.budgets.bulkAdd((b.data.budgets ?? []) as never[]);
+    await db.emiPlans.bulkAdd((b.data.emiPlans ?? []) as never[]);
     await db.subscriptions.bulkAdd(b.data.subscriptions ?? []);
     await db.debts.bulkAdd(b.data.debts ?? []);
     await db.inbox.bulkAdd(b.data.inbox ?? []);
     await db.rules.bulkAdd(b.data.rules ?? []);
-    await db.meta.bulkPut([...(b.data.meta ?? []), { key: 'onboarded', value: true }]);
+    // On a new phone the app reads its SMS again (newest first): drop the old phone's
+    // "already read" markers and anything half-done there.
+    const skip = new Set(['nativeFilterRead', 'nativeFilterRead2', 'catchUp', 'setupStage']);
+    await db.meta.bulkPut([
+      ...(b.data.meta ?? []).filter((m) => !skip.has(m.key)),
+      { key: 'onboarded', value: true },
+      { key: 'setupStage', value: 'done' },
+    ]);
   });
   return { accounts: b.data.accounts.length, transactions: b.data.transactions.length };
 }

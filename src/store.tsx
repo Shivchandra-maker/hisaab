@@ -6,7 +6,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { backfillTimes, recheckBillPayments, reparseInboxIfNeeded } from './db/inbox';
 import { inboxNeeds, type InboxNeeds } from './db/needs';
 import { requestPersistentStorage } from './db/persist';
-import { db, ensureDefaults } from './db/repo';
+import { applyRulesToPast, db, ensureDefaults } from './db/repo';
 import { seedDemoIfNeeded } from './db/demoSeed';
 import { isDemo } from './db/demo';
 import { todayIST } from './domain/dates';
@@ -78,6 +78,7 @@ export function StoreProvider({ children, loading }: { children: ReactNode; load
       .then(() => reparseInboxIfNeeded())
       .then(() => backfillTimes())
       .then(() => recheckBillPayments())
+      .then(() => applyRulesToPast())
       // Phone: re-checked after contacts load (native/capture.ts). Browser: no contacts → no asks.
       .then(() => (Capacitor.isNativePlatform() ? undefined : reviewLoanQuestions()))
       .then(() => refreshCheckpoints())
@@ -128,6 +129,7 @@ export function StoreProvider({ children, loading }: { children: ReactNode; load
       rules: liveRules,
       accountHints: (meta.accountHints as Record<string, string>) ?? {},
       autoAdd: meta.autoAdd !== false,
+      today,
     });
     return {
       today,

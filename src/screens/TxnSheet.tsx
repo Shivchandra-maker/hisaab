@@ -14,10 +14,17 @@ import { periodContaining } from '../domain/cycle';
 import { addDays, formatDate, timeIST } from '../domain/dates';
 import { cleanAmountInput, formatINR, toPaise, toRupees } from '../domain/money';
 import type { Account, PaymentMode, Split, Transaction } from '../domain/types';
-import { deleteTransaction, restoreTransaction, saveTransaction } from '../db/repo';
+import {
+  deleteTransaction,
+  recategorise,
+  restoreTransaction,
+  samePayee,
+  saveTransaction,
+} from '../db/repo';
 import { guessCategory } from '../domain/sms/categorize';
 import { PaidForOthers, type PendingSplit } from './PaidForOthers';
 import { LoanEntrySheet } from './LoanEntrySheet';
+import { PersonMoney } from './PersonMoney';
 import { useStore } from '../store';
 import { useUI, type TxnDraft } from '../ui';
 
@@ -154,6 +161,15 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
   const pickable = categories.filter((c) => c.kind === catKind && !c.archived);
   const mains = pickable.filter((c) => !c.parentId);
   const selected = categories.find((c) => c.id === categoryId);
+  // U-27: a category you pick fixes this payee's other payments too (you can untick it).
+  const [alsoOthers, setAlsoOthers] = useState(true);
+  const others = useMemo(
+    () =>
+      tab === 'transfer' || splits || !catTouched || (editing && initial?.categoryId === categoryId)
+        ? []
+        : samePayee(transactions, merchant, categoryId, tab === 'income' && !refund, initial?.id),
+    [tab, splits, catTouched, editing, initial, categoryId, transactions, merchant, refund],
+  );
   const selectedMain = selected?.parentId ? selected.parentId : selected?.id;
   const subs = pickable.filter((c) => c.parentId && c.parentId === selectedMain);
   const visibleMains = showAll ? mains : mains.slice(0, 11);
@@ -238,23 +254,31 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
       if (date > today)
         throw new Error('That date is in the future. Add it on the day the money actually moves.');
       await saveTransaction(build() as Transaction);
+      const fixed = others.length && alsoOthers ? others.length : 0;
+      const undo = fixed ? await recategorise(others, categoryId) : undefined;
+      if (fixed)
+        toast(
+          `Saved · ${fixed} other ${merchant.trim()} payment${fixed === 1 ? '' : 's'} moved to ${selected?.name ?? 'this category'}`,
+          undo,
+        );
       // D-19: one Save — the payment first, then the split set up below it.
       if (split) {
         await split.commit();
         onClose();
         return;
       }
-      toast(
-        editing
-          ? 'Saved'
-          : tab === 'transfer'
-            ? 'Transfer added'
-            : tab === 'income'
-              ? refund
-                ? 'Refund added'
-                : 'Income added'
-              : 'Expense added',
-      );
+      if (!fixed)
+        toast(
+          editing
+            ? 'Saved'
+            : tab === 'transfer'
+              ? 'Transfer added'
+              : tab === 'income'
+                ? refund
+                  ? 'Refund added'
+                  : 'Income added'
+                : 'Expense added',
+        );
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save.');
@@ -650,6 +674,19 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
         />
       </Field>
 
+      {others.length > 0 && (
+        <label className="row also-row">
+          <input
+            type="checkbox"
+            checked={alsoOthers}
+            onChange={(e) => setAlsoOthers(e.target.checked)}
+          />
+          <span>
+            Also move {others.length} other {merchant.trim()} payment
+            {others.length === 1 ? '' : 's'} to {selected?.name ?? 'this category'}
+          </span>
+        </label>
+      )}
       {cardNote && <div className="note note-cycle">{cardNote}</div>}
       {editing && initial?.kind === 'expense' && initial.id && (
         <PaidForOthers
@@ -659,6 +696,12 @@ function TxnEditor({ initial, onClose }: { initial?: TxnDraft; onClose: () => vo
           onDone={onClose}
         />
       )}
+      {editing &&
+        initial?.id &&
+        !split &&
+        ((initial.kind === 'expense' && !initial.grossAmount) || initial.kind === 'income') && (
+          <PersonMoney txn={initial as Transaction} onDone={onClose} />
+        )}
       <ErrorNote message={error} />
       {split && (
         <button className="btn btn-primary btn-block" onClick={save}>

@@ -22,6 +22,7 @@ import {
   ingestMessages,
   personKey,
   restoreInboxItem,
+  setAsideOlder,
   type IngestSummary,
 } from '../db/inbox';
 import { needsDupCheck, useStore } from '../store';
@@ -60,7 +61,7 @@ export function Inbox() {
   const autoAdd = meta.autoAdd !== false;
 
   // D-01: the same grouping (and the same count) the badge and Home banner use.
-  const { people, groups, dups, other, ready, suggestions, count: needYou } = needs;
+  const { people, groups, dups, other, ready, suggestions, older, since, count: needYou } = needs;
   // Autopay and EMI notices aren't payments: kept for the coming autopay tracking, not shown (U-14).
   const handled = inbox.filter(
     (i) =>
@@ -139,6 +140,50 @@ export function Inbox() {
             <ReviewCard key={i.id} item={i} s={suggestions.get(i.id)!} />
           ))}
         </section>
+      )}
+
+      {older.length > 0 && (
+        <details className="panel">
+          <summary className="row fold" style={{ cursor: 'pointer' }}>
+            <span className="stack" style={{ gap: 2 }}>
+              <b>Older messages ({older.length})</b>
+              <span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>
+                From before {since ? formatDate(since) : 'last month'} — not counted. Look only if
+                you want to.
+              </span>
+            </span>
+            <span className="spacer" />
+            <Icon name="chevdown" size={16} className="fold-chev" />
+          </summary>
+          <div className="stack" style={{ marginTop: 'var(--sp-3)' }}>
+            <ConfirmButton
+              label={`Set all ${older.length} aside`}
+              confirmLabel="Tap again — they move to Handled"
+              onConfirm={async () => {
+                const n = await setAsideOlder(older.map((i) => i.id));
+                toast(`${n} older message${n === 1 ? '' : 's'} set aside`);
+              }}
+            />
+            {older
+              .slice(0, 30)
+              .map((i) =>
+                i.status === 'duplicate' ? (
+                  <DupCard key={i.id} item={i} />
+                ) : (
+                  <ReviewCard
+                    key={`${i.id}-${accounts.length}`}
+                    item={i}
+                    s={suggestions.get(i.id)!}
+                  />
+                ),
+              )}
+            {older.length > 30 && (
+              <p className="faint" style={{ margin: 0, fontSize: 'var(--fs-xs)' }}>
+                Showing the newest 30.
+              </p>
+            )}
+          </div>
+        </details>
       )}
 
       {needYou === 0 && (
@@ -537,7 +582,7 @@ function ReviewCard({
   const [editing, setEditing] = useState(!s.ready);
   const { openAccount, toast } = useUI();
   const [kind, setKind] = useState<TxnKind>(s.kind);
-  const [amount, setAmount] = useState(String(toRupees(s.amount)));
+  const [amount, setAmount] = useState(s.amount ? String(toRupees(s.amount)) : '');
   const [accountId, setAccountId] = useState(s.accountId ?? '');
   const [toAccountId, setToAccountId] = useState(s.toAccountId ?? '');
   const [categoryId, setCategoryId] = useState(s.categoryId ?? '');
@@ -750,7 +795,15 @@ function ReviewCard({
             </select>
           </Field>
           <div className="grid-2" style={{ gap: 'var(--sp-3)' }}>
-            <Field label="Amount" htmlFor={`v-${item.id}`}>
+            <Field
+              label="Amount"
+              htmlFor={`v-${item.id}`}
+              hint={
+                item.parsed.foreign
+                  ? `Spent ${item.parsed.foreign.currency} ${item.parsed.foreign.amount / 100} — type the ₹ amount from your card app or statement`
+                  : undefined
+              }
+            >
               <input
                 id={`v-${item.id}`}
                 className="input num"

@@ -104,6 +104,9 @@ export async function refreshCheckpoints(): Promise<number> {
       if (later(seen, avail.get(account.id) ?? account.lastAvailable)) avail.set(account.id, seen);
       const limit = account.card?.creditLimit ?? 0;
       if (!limit) continue; // can't turn "available" into "owed" without the limit
+      // More available than the limit: either the limit entered is wrong or you paid extra.
+      // Until you say which (card screen), it says nothing about what you owe.
+      if (p.balance > limit && !account.card?.creditBalanceOk) continue;
       amount = limit - p.balance;
     } else {
       if (p.balanceIsLimit) continue;
@@ -123,7 +126,19 @@ export async function refreshCheckpoints(): Promise<number> {
     const upd: Partial<Account> = {};
     const av = avail.get(a.id);
     if (av) upd.lastAvailable = av;
-    if (pt && pt.date >= a.openingDate && later(pt, a.check)) {
+    // Re-anchor on a newer bank figure — or on the same message read again with a corrected
+    // credit limit, which changes what it says you owe.
+    const sameAgain =
+      !!pt && !!a.check && pt.date === a.check.date && (pt.ts ?? 0) === (a.check.ts ?? 0);
+    // Older versions anchored cards on "available above the limit" → owed below zero. Any good
+    // reading replaces that, even an earlier one.
+    const badAnchor =
+      a.kind === 'credit_card' && !!a.check && a.check.amount < 0 && !a.card?.creditBalanceOk;
+    if (
+      pt &&
+      (pt.date >= a.openingDate || badAnchor) &&
+      (later(pt, a.check) || (sameAgain && pt.amount !== a.check!.amount) || badAnchor)
+    ) {
       // How far off our own count was between the last two balances the bank stated.
       const prev = previous.get(a.id);
       let drift = 0;

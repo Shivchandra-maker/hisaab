@@ -32,11 +32,19 @@ export function assetDelta(t: Transaction, accountId: ID): Paise {
  */
 export function balanceOf(account: Account, txns: Transaction[], asOf?: ISODate): Paise {
   let delta = 0;
-  for (const t of txns) {
-    if (!counted(t) || t.date < account.openingDate) continue;
-    if (asOf && t.date > asOf) continue;
-    delta += assetDelta(t, account.id);
-  }
+  if (asOf && asOf < account.openingDate) {
+    // Before the anchor (a bank-stated balance moves it forward): work back from it through the
+    // payments in between, instead of pretending the anchor amount was already true back then.
+    for (const t of txns) {
+      if (!counted(t) || t.date <= asOf || t.date >= account.openingDate) continue;
+      delta -= assetDelta(t, account.id);
+    }
+  } else
+    for (const t of txns) {
+      if (!counted(t) || t.date < account.openingDate) continue;
+      if (asOf && t.date > asOf) continue;
+      delta += assetDelta(t, account.id);
+    }
   return isLiability(account.kind)
     ? account.openingBalance - delta
     : account.openingBalance + delta;
@@ -163,6 +171,8 @@ function cardFlows(card: Account, txns: Transaction[], start: ISODate, end: ISOD
   for (const t of txns) {
     if (!counted(t) || !inRange(t.date, start, end)) continue;
     if (t.accountId === card.id) {
+      // Balance corrections fix what's owed, never what was spent on the card.
+      if (t.kind === 'adjustment') continue;
       const out = assetDelta(t, card.id) < 0;
       if (out)
         charges += t.amount; // purchases, cash withdrawals, fees
@@ -242,7 +252,7 @@ export function cardSnapshot(card: Account, txns: Transaction[], today: ISODate)
     currentPeriod,
     lastStatement,
     available: Math.max(0, limit - owed),
-    utilisation: limit > 0 ? owed / limit : 0,
+    utilisation: limit > 0 ? Math.max(0, owed) / limit : 0,
   };
 }
 
